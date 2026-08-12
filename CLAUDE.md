@@ -28,6 +28,12 @@ Each Gource "user" (the on-screen actor/avatar) represents **one agent**.
    implement on its own. All work goes through the specialists: `desenvolvedor-tester`
    (tests/RED), `desenvolvedor-backend` (Python) and/or `desenvolvedor-frontend` (TypeScript),
    collaborating according to the layer involved.
+3. **NEVER commit or push without the user asking for it.** Not at the end of a task, not
+   because the work is finished, not because the tree is dirty and tests are green. Leave
+   changes in the working tree and say what is uncommitted; the user decides what becomes
+   history and what gets published. This covers `git commit`, `git push`, `git merge`,
+   branch deletion, tags, and opening PRs. "Implement X" is not permission to commit X, and
+   permission given once does not carry to the next change.
 
 ## Architecture
 

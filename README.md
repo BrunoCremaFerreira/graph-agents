@@ -52,7 +52,9 @@ beam at each file actually copied.
 4. **Transport** — the daemon rebroadcasts each event over **WebSocket** and serves the
    frontend over HTTP.
 5. **Rendering** — the browser draws the tree with d3-force + three.js (`UnrealBloomPass`),
-   with a Gource-style figure per agent firing beams at the files it touches.
+   with a Gource-style figure per agent firing beams at the files it touches, and names on
+   the directories and on whichever files are worth naming right now (see
+   [Reading the graph](#reading-the-graph)).
 
 ### Event format (WebSocket, JSON)
 
@@ -75,12 +77,39 @@ edit, a build step). Such events still show the file changing, but never invent 
 
 ---
 
+## Reading the graph
+
+| Input | Effect |
+|---|---|
+| wheel / trackpad scroll | zoom under the cursor |
+| drag | pan |
+| double-click | hand control back to auto-fit |
+
+The camera auto-fits the whole tree until you touch it; from then on it holds your framing,
+so a label stays still long enough to read. Double-click resumes following.
+
+**Directories are always named.** **Files are named when there is a reason to name one:**
+whichever files were just touched — the name fades out with the highlight, like the file
+itself — plus, once you zoom in far enough to have room, the idle files still on screen.
+Naming all of them at once would be an unreadable wall of text on any real project.
+
+Names hold the same size on screen at every zoom level: they are sized in pixels, not in
+world units, so they neither shrink to nothing when the whole project is framed nor swallow
+the screen when you are down to a single file.
+
+---
+
 ## Requirements
 
 - **Python 3.10+** (for the daemon; the hook uses the stdlib only). The daemon needs
   `websockets` and `watchdog` — `pip install -e '.[daemon]'`, or just run `./start.sh`.
 - **Node.js 18+ / npm** — only to _build_ the frontend. If `web/dist` already exists, you can
   run without Node.
+
+> If you edit anything under `web/src/`, you need Node: the daemon serves the built
+> `web/dist` from disk, and `start.sh` **silently serves a stale build** when Node is
+> missing — a front-end change then looks like it did nothing. Rebuild with
+> `./start.sh --rebuild`.
 
 ---
 
@@ -198,9 +227,12 @@ web/                       # TypeScript frontend (Vite)
   src/protocol.ts          #   typed event parsing/validation
   src/simulation.ts        #   pure model: directory tree, actors, fade
   src/layout.ts            #   d3-force
+  src/view.ts              #   pure: zoom/pan camera state
+  src/labels.ts            #   pure: label size, placement, which files get named
   src/avatar.ts            #   the agent figure, painted on a canvas
   src/renderer.ts          #   three.js + UnrealBloomPass (Gource look)
   src/wsClient.ts          #   WebSocket client with reconnection
+.claude/agents/            # the specialist agents that develop this repo
 tests/                     # pytest (backend)
 web/tests/                 # vitest (frontend)
 start.sh / run.sh          # bootstrap+run / minimal daemon launcher
@@ -210,8 +242,14 @@ start.sh / run.sh          # bootstrap+run / minimal daemon launcher
 
 ## Development
 
-This project follows **TDD** (test before code) and is developed by **specialist agents** —
-see [`CLAUDE.md`](CLAUDE.md) for the rules and the workflow.
+`renderer.ts` needs a WebGL context and so cannot be unit-tested. Every decision worth
+testing therefore lives in a pure sibling that imports neither three.js nor the DOM —
+`simulation.ts`, `view.ts`, `labels.ts` — and the renderer only draws what they return. New
+front-end logic belongs in one of those, not in the renderer.
+
+This project follows **TDD** (test before code) and is developed by **specialist agents**
+defined in [`.claude/agents/`](.claude/agents) — see [`CLAUDE.md`](CLAUDE.md) for the rules
+and the workflow.
 
 ```bash
 # backend (pytest)
@@ -229,7 +267,7 @@ npm run build
 ## Status and limitations
 
 - ✅ Backend: 97 `pytest` green; the hook exits with `exit 0` on invalid input.
-- ✅ Frontend: 66 `vitest` green; `tsc` + `vite build` clean.
+- ✅ Frontend: 87 `vitest` green; `tsc` + `vite build` clean.
 - ✅ End-to-end integration, verified against a live daemon: the tree is seeded on connect, a
   `Write` flashes exactly once across both channels, `cp *.md docs/` reports each file
   actually copied and credits the agent, `rm -rf docs/` prunes the subtree, and an edit made

@@ -17,17 +17,17 @@ Claude Code agent(s)  ──PostToolUse hook (JSON)──►  adapter  ──Gou
 
 Each Gource "user" (the on-screen actor/avatar) represents **one agent**.
 
-## Regras obrigatórias (non-negotiable)
+## Mandatory rules (non-negotiable)
 
-1. **SEMPRE usar TDD antes de qualquer desenvolvimento.** Nenhuma linha de código de produção
-   é escrita antes de existir um teste que falha especificando o comportamento desejado. O ciclo
-   Red → Green → Refactor (ver "Agents & TDD workflow") é obrigatório para toda feature, correção
-   ou refatoração — sem exceção.
-2. **Todo plano e implementação são feitos pelos agentes especialistas em conjunto, nunca só pelo
-   orquestrador.** O agente principal orquestra e delega; ele não planeja nem implementa sozinho.
-   Todo trabalho passa pelos especialistas: `desenvolvedor-tester` (testes/RED),
-   `desenvolvedor-backend` (Python) e/ou `desenvolvedor-frontend` (TypeScript), colaborando
-   conforme a camada envolvida.
+1. **ALWAYS use TDD before any development.** No line of production code is written before a
+   failing test exists specifying the desired behavior. The Red → Green → Refactor cycle
+   (see "Agents & TDD workflow") is mandatory for every feature, fix, or refactor — no
+   exceptions.
+2. **All planning and implementation are done by the specialist agents together, never by the
+   orchestrator alone.** The main agent orchestrates and delegates; it does not plan or
+   implement on its own. All work goes through the specialists: `desenvolvedor-tester`
+   (tests/RED), `desenvolvedor-backend` (Python) and/or `desenvolvedor-frontend` (TypeScript),
+   collaborating according to the layer involved.
 
 ## Architecture
 
@@ -131,7 +131,7 @@ Web MVP implemented and verified end-to-end (TDD, all via the specialist agents)
 Run: `./run.sh` (starts the daemon). Build the front once with `cd web && npm install && npm run build`.
 Install capture by copying the `hooks` block from `config/settings.json` into the observed
 project's `.claude/settings.json`. Deps: `pip install -e '.[daemon]'` for the daemon; the hook
-needs nothing. See "Regras obrigatórias" and "Agents & TDD workflow" for how changes are made.
+needs nothing. See "Mandatory rules" and "Agents & TDD workflow" for how changes are made.
 
 Not yet built: per-subagent attribution (currently one actor per session), Bash `mv` paired
 `A`-of-destination, user avatars/images, recorded-session replay/export.

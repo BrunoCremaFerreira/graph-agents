@@ -1,92 +1,95 @@
 # graph-agents
 
-Visualização **web, em tempo real**, do que cada agente do Claude Code está fazendo —
-criação, edição e exclusão de arquivos e diretórios — renderizada com o visual do
-[Gource](https://gource.io/). Diferente do Gource (um binário desktop), roda no navegador.
+**Real-time web visualization** of what each Claude Code agent is doing — creating, editing,
+and deleting files and directories — rendered with the look of
+[Gource](https://gource.io/). Unlike Gource (a desktop binary), it runs in the browser.
 
-Cada agente aparece como um **ator** que emite feixes até os arquivos que toca; os arquivos
-são pontos brilhantes coloridos numa árvore de diretórios com layout por forças e efeito de
-_bloom_ — o traço característico do Gource.
+Each agent shows up as an **actor** emitting beams toward the files it touches; files are
+bright colored dots on a force-laid-out directory tree with a _bloom_ effect — Gource's
+signature look.
 
-> **Estado:** MVP web funcional, verificado ponta a ponta. O visual em navegador ainda não
-> foi validado visualmente. Veja [Status e limitações](#status-e-limitações).
+> **Status:** working web MVP, verified end to end. The in-browser visual has not been
+> validated visually yet. See [Status and limitations](#status-and-limitations).
 
 ---
 
-## Como funciona
+## How it works
 
-Não reimplementamos a captura do zero nem embutimos o código do Gource: aproveitamos os
-**hooks do Claude Code** para capturar as operações de arquivo e replicamos o visual do Gource
-em WebGL (three.js).
+We neither reimplement capture from scratch nor embed Gource's code: we leverage
+**Claude Code hooks** to capture file operations and reproduce Gource's look in WebGL
+(three.js).
 
 ```mermaid
 flowchart LR
-    A["Claude Code<br/>agente(s)"] -->|"PostToolUse (JSON)"| B["hooks/emit_event.py"]
-    B -->|"linha JSON<br/>via Unix socket"| C["daemon/server.py"]
-    C -->|"evento<br/>via WebSocket"| D["web/ (three.js)<br/>renderer estilo Gource"]
+    A["Claude Code<br/>agent(s)"] -->|"PostToolUse (JSON)"| B["hooks/emit_event.py"]
+    B -->|"JSON line<br/>over Unix socket"| C["daemon/server.py"]
+    C -->|"event<br/>over WebSocket"| D["web/ (three.js)<br/>Gource-style renderer"]
     C -->|"HTTP :8080"| D
 ```
 
-1. **Captura** — um hook `PostToolUse` (em `Write`/`Edit`/`MultiEdit`/`Bash`) dispara
-   `hooks/emit_event.py`, que apenas **encaminha** o JSON cru do evento. O hook é _stdlib pura_,
-   sem dependências, e **sempre sai com código 0** — nunca trava a sessão do Claude Code.
-2. **Normalização + agregação** — `daemon/server.py` recebe os eventos por um _Unix socket_,
-   normaliza cada um para o formato de fio e decide `A` (added) vs `M` (modified) mantendo o
-   conjunto de caminhos já vistos (nada de sondar o filesystem no caminho quente).
-3. **Transmissão** — o daemon retransmite cada evento por **WebSocket** e serve o front por HTTP.
-4. **Renderização** — o navegador desenha a árvore com d3-force + three.js (`UnrealBloomPass`).
+1. **Capture** — a `PostToolUse` hook (on `Write`/`Edit`/`MultiEdit`/`Bash`) fires
+   `hooks/emit_event.py`, which merely **forwards** the raw event JSON. The hook is _pure
+   stdlib_, dependency-free, and **always exits with code 0** — it never stalls the Claude
+   Code session.
+2. **Normalization + aggregation** — `daemon/server.py` receives the events over a _Unix
+   socket_, normalizes each one into the wire format, and decides `A` (added) vs `M`
+   (modified) by keeping the set of already-seen paths (no filesystem probing on the hot
+   path).
+3. **Transport** — the daemon rebroadcasts each event over **WebSocket** and serves the
+   frontend over HTTP.
+4. **Rendering** — the browser draws the tree with d3-force + three.js (`UnrealBloomPass`).
 
-### Formato do evento (WebSocket, JSON)
+### Event format (WebSocket, JSON)
 
 ```json
 { "ts": 1754870400.12, "agent": "agent-worker", "type": "A", "path": "src/api/users.ts", "color": "33FF33" }
 ```
 
-`type` é `A`/`M`/`D`; `color` é hex sem `#` (A→`33FF33`, M→`FFAA00`, D→`FF3333`).
+`type` is `A`/`M`/`D`; `color` is hex without `#` (A→`33FF33`, M→`FFAA00`, D→`FF3333`).
 
 ---
 
-## Requisitos
+## Requirements
 
-- **Python 3.10+** (para o daemon; o hook usa só a stdlib).
-- **Node.js 18+ / npm** — apenas para _buildar_ o front. Se o `web/dist` já existir, dá para
-  rodar sem Node.
+- **Python 3.10+** (for the daemon; the hook uses the stdlib only).
+- **Node.js 18+ / npm** — only to _build_ the frontend. If `web/dist` already exists, you can
+  run without Node.
 
 ---
 
-## Início rápido
+## Quick start
 
 ```bash
 ./start.sh
 ```
 
-O `start.sh` faz o bootstrap completo de forma idempotente: cria a `.venv`, instala as deps do
-daemon, gera `web/dist` (se necessário) e sobe o daemon. Ao final, abra:
+`start.sh` does the full bootstrap idempotently: it creates the `.venv`, installs the daemon
+deps, generates `web/dist` (if needed), and brings the daemon up. When it finishes, open:
 
 ```
 http://localhost:8080
 ```
 
-### Modos do start.sh
+### start.sh modes
 
-| Comando | Efeito |
+| Command | Effect |
 |---|---|
-| `./start.sh` | prod — garante o build e serve `web/dist` em `http://localhost:8080` |
-| `./start.sh --dev` | daemon + Vite dev server com hot reload (`http://localhost:5173`) |
-| `./start.sh --rebuild` | força reinstalar/rebuildar o front |
-| `./start.sh --no-build` | pula o front, serve o `web/dist` existente |
-| `./start.sh --help` | ajuda |
+| `./start.sh` | prod — ensures the build and serves `web/dist` at `http://localhost:8080` |
+| `./start.sh --dev` | daemon + Vite dev server with hot reload (`http://localhost:5173`) |
+| `./start.sh --rebuild` | forces a reinstall/rebuild of the frontend |
+| `./start.sh --no-build` | skips the frontend, serves the existing `web/dist` |
+| `./start.sh --help` | help |
 
-> `run.sh` é um lançador mínimo (só o daemon, assumindo tudo já preparado). Para o fluxo
-> "do zero ao ar", use `start.sh`.
+> `run.sh` is a minimal launcher (daemon only, assuming everything is already prepared). For
+> the "from zero to running" flow, use `start.sh`.
 
 ---
 
-## Instalando a captura no projeto observado
+## Installing capture in the observed project
 
-O daemon só recebe eventos se o projeto que você quer visualizar tiver o hook instalado.
-Copie o bloco `"hooks"` de [`config/settings.json`](config/settings.json) para o
-`.claude/settings.json` **do projeto observado**, ajustando o caminho absoluto do
+The daemon only receives events if the project you want to visualize has the hook installed.
+Copy the `"hooks"` block from [`config/settings.json`](config/settings.json) into the
+`.claude/settings.json` **of the observed project**, adjusting the absolute path to
 `emit_event.py`:
 
 ```json
@@ -104,49 +107,49 @@ Copie o bloco `"hooks"` de [`config/settings.json`](config/settings.json) para o
 }
 ```
 
-A partir daí, cada operação de arquivo daquele projeto vira um evento no grafo.
+From then on, every file operation in that project becomes an event in the graph.
 
 ---
 
-## Configuração
+## Configuration
 
-Variáveis de ambiente (todas opcionais):
+Environment variables (all optional):
 
-| Variável | Default | Descrição |
+| Variable | Default | Description |
 |---|---|---|
-| `GRAPHAGENTS_SOCKET` | `/tmp/graph-agents.sock` | Unix socket de ingest (hook ↔ daemon). |
-| `GRAPHAGENTS_WS_PORT` | `8765` | Porta do WebSocket (browser). |
-| `GRAPHAGENTS_HTTP_PORT` | `8080` | Porta HTTP que serve `web/dist`. |
-| `GRAPHAGENTS_PROJECT_ROOT` | cwd | Raiz cujos caminhos viram relativos no grafo. |
+| `GRAPHAGENTS_SOCKET` | `/tmp/graph-agents.sock` | Ingest Unix socket (hook ↔ daemon). |
+| `GRAPHAGENTS_WS_PORT` | `8765` | WebSocket port (browser). |
+| `GRAPHAGENTS_HTTP_PORT` | `8080` | HTTP port serving `web/dist`. |
+| `GRAPHAGENTS_PROJECT_ROOT` | cwd | Root against which paths are made relative in the graph. |
 
-O socket deve coincidir entre o hook e o daemon; se mudar um, mude o outro.
+The socket must match between the hook and the daemon; if you change one, change the other.
 
 ---
 
-## Estrutura do projeto
+## Project structure
 
 ```
-graphagents/normalize.py   # núcleo puro: hook JSON -> Event (defensivo, nunca levanta)
-hooks/emit_event.py        # hook: stdlib, encaminha o evento, exit 0 sempre
-daemon/server.py           # asyncio: ingest (socket) + WebSocket + HTTP estático
-config/settings.json       # bloco de hooks para copiar no projeto observado
-web/                       # front TypeScript (Vite)
-  src/protocol.ts          #   parse/validação tipada do evento
-  src/simulation.ts        #   modelo puro: árvore de diretórios, atores, fade
+graphagents/normalize.py   # pure core: hook JSON -> Event (defensive, never raises)
+hooks/emit_event.py        # hook: stdlib, forwards the event, always exit 0
+daemon/server.py           # asyncio: ingest (socket) + WebSocket + static HTTP
+config/settings.json       # hooks block to copy into the observed project
+web/                       # TypeScript frontend (Vite)
+  src/protocol.ts          #   typed event parsing/validation
+  src/simulation.ts        #   pure model: directory tree, actors, fade
   src/layout.ts            #   d3-force
-  src/renderer.ts          #   three.js + UnrealBloomPass (visual Gource)
-  src/wsClient.ts          #   cliente WebSocket com reconexão
+  src/renderer.ts          #   three.js + UnrealBloomPass (Gource look)
+  src/wsClient.ts          #   WebSocket client with reconnection
 tests/                     # pytest (backend)
 web/tests/                 # vitest (frontend)
-start.sh / run.sh          # bootstrap+run / lançador mínimo do daemon
+start.sh / run.sh          # bootstrap+run / minimal daemon launcher
 ```
 
 ---
 
-## Desenvolvimento
+## Development
 
-Este projeto segue **TDD** (teste antes do código) e é desenvolvido por **agentes
-especialistas** — veja [`CLAUDE.md`](CLAUDE.md) para as regras e o fluxo de trabalho.
+This project follows **TDD** (test before code) and is developed by **specialist agents** —
+see [`CLAUDE.md`](CLAUDE.md) for the rules and the workflow.
 
 ```bash
 # backend (pytest)
@@ -161,28 +164,28 @@ npm run build
 
 ---
 
-## Status e limitações
+## Status and limitations
 
-- ✅ Backend: `pytest` verde; hook sai com `exit 0` em entrada inválida.
-- ✅ Frontend: `vitest` verde; `tsc` + `vite build` limpos.
-- ✅ Integração ponta a ponta: `Write` real → hook → daemon → WebSocket entrega o evento
-  correto; HTTP serve a página buildada.
-- ⚠️ **Visual em navegador ainda não validado** — o renderer compila e builda, mas a fidelidade
-  ao Gource não foi conferida com um browser aberto.
+- ✅ Backend: `pytest` green; the hook exits with `exit 0` on invalid input.
+- ✅ Frontend: `vitest` green; `tsc` + `vite build` clean.
+- ✅ End-to-end integration: a real `Write` → hook → daemon → WebSocket delivers the correct
+  event; HTTP serves the built page.
+- ⚠️ **In-browser visual not validated yet** — the renderer compiles and builds, but fidelity
+  to Gource has not been checked with a browser open.
 
-**Ainda não implementado:**
+**Not yet implemented:**
 
-- Atribuição por _subagente_ (hoje: um ator por sessão do Claude Code).
-- O `A` de destino pareado no `mv` do Bash (hoje só o `D` da origem).
-- Avatares/imagens por agente.
-- Gravação/replay e export de vídeo de sessões.
+- Per-_subagent_ attribution (today: one actor per Claude Code session).
+- The paired destination `A` for Bash `mv` (today only the source `D`).
+- Per-agent avatars/images.
+- Session recording/replay and video export.
 
 ---
 
-## Licença
+## License
 
 [MIT](LICENSE).
 
-- O visual é uma **reimplementação** do look do Gource em WebGL; o código-fonte do Gource
-  (GPLv3) **não** é utilizado nem redistribuído aqui — por isso este projeto pode ser MIT.
+- The visual is a **reimplementation** of Gource's look in WebGL; Gource's source code
+  (GPLv3) is **not** used or redistributed here — which is why this project can be MIT.
 - Gource: <https://gource.io/>

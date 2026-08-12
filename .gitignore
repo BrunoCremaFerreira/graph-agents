@@ -1,0 +1,14 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.pytest_cache/
+.venv/
+venv/
+
+# Node / web build
+node_modules/
+web/dist/
+
+# Editors / OS
+.DS_Store

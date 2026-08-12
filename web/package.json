@@ -1,0 +1,25 @@
+{
+  "name": "graph-agents-web",
+  "private": true,
+  "version": "0.0.0",
+  "type": "module",
+  "description": "WebGL/WebSocket front-end that renders live agent activity in a Gource style.",
+  "scripts": {
+    "dev": "vite",
+    "build": "tsc && vite build",
+    "preview": "vite preview",
+    "test": "vitest run",
+    "test:watch": "vitest"
+  },
+  "dependencies": {
+    "d3-force": "^3.0.0",
+    "three": "^0.160.0"
+  },
+  "devDependencies": {
+    "@types/d3-force": "^3.0.10",
+    "@types/three": "^0.160.0",
+    "typescript": "^5.4.0",
+    "vite": "^5.2.0",
+    "vitest": "^1.5.0"
+  }
+}

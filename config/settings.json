@@ -1,0 +1,27 @@
+{
+  "//": "graph-agents capture hooks. Copy the 'hooks' block into the OBSERVED",
+  "//instructions": [
+    "project's .claude/settings.json. Adjust the absolute path to emit_event.py.",
+    "The hook only FORWARDS the raw PostToolUse JSON to the daemon over a Unix",
+    "socket; the daemon (daemon/server.py) normalizes it and owns the set of",
+    "already-seen paths that decides A (added) vs M (modified) for Write. That is",
+    "why there is no PreToolUse hook here: existence is tracked in the daemon, so",
+    "the first Write to a path is an add and any later Write is a modify, with no",
+    "filesystem probing on the hot path.",
+    "Env vars (optional): GRAPHAGENTS_SOCKET overrides the socket path and must",
+    "match the daemon; default is /tmp/graph-agents.sock."
+  ],
+  "hooks": {
+    "PostToolUse": [
+      {
+        "matcher": "Write|Edit|MultiEdit|Bash",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "python3 /home/brn/projects/graph-agents/hooks/emit_event.py"
+          }
+        ]
+      }
+    ]
+  }
+}

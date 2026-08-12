@@ -1,0 +1,28 @@
+[build-system]
+requires = ["setuptools>=61.0"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "graphagents"
+version = "0.0.0"
+description = "Adapter that turns Claude Code hook events into a Gource-style event stream."
+requires-python = ">=3.10"
+dependencies = []
+
+[project.optional-dependencies]
+# The daemon may use third-party deps; the hook (hooks/emit_event.py) MUST stay
+# stdlib-only and is intentionally excluded from any dependency here.
+daemon = ["websockets>=12"]
+dev = ["pytest>=7", "websockets>=12"]
+
+[tool.setuptools]
+packages = ["graphagents", "daemon"]
+
+[tool.pytest.ini_options]
+minversion = "7.0"
+testpaths = ["tests"]
+pythonpath = ["."]
+addopts = "-ra"
+python_files = ["test_*.py"]
+python_classes = ["Test*"]
+python_functions = ["test_*"]

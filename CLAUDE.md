@@ -116,9 +116,8 @@ tail -f /tmp/claude-gource.pipe | gource --realtime --log-format custom \
 Custom agents live in `.claude/agents/`:
 
 - **`desenvolvedor-backend`** — implements Python (adapter, hook scripts, aggregator daemon, CLI).
-- **`desenvolvedor-frontend`** — implements TypeScript (WebGL renderer, WebSocket client, UI).
-  Only relevant if the target is **web** (Route C); a native desktop target (Route B, C++) would
-  replace this agent.
+- **`desenvolvedor-frontend`** — implements TypeScript under `web/` (three.js renderer, the
+  pure model/layout/view/label modules, WebSocket client, UI).
 - **`desenvolvedor-tester`** — writes tests only, **never** production code; drives development via TDD.
 
 This project follows **Test-Driven Development**. The intended loop:
@@ -141,18 +140,28 @@ Web MVP implemented and verified end-to-end (TDD).
   a Unix socket, watches the filesystem, and serves `web/dist` over HTTP **and** broadcasts
   events over WebSocket (`/ws`) on a single port (`:8080`) — one forwarded port is enough for
   remote/SSH use, and the browser derives the socket URL from its own origin.
-- **Frontend** (`web/`): 66/66 vitest green, `tsc` + `vite build` clean. Gource-style WebGL
+- **Frontend** (`web/`): 87/87 vitest green, `tsc` + `vite build` clean. Gource-style WebGL
   renderer (three.js force layout + `UnrealBloomPass` + per-agent figure and beams), pure
-  `simulation.ts` model, typed `parseEvent`, auto-reconnecting `wsClient.ts`.
+  `simulation.ts` model, typed `parseEvent`, auto-reconnecting `wsClient.ts`. Label placement
+  lives in pure `labels.ts` (like `view.ts`) because `renderer.ts` needs a GL context and
+  cannot be unit-tested: sizes are constant in **pixels** (the camera spans halfHeight
+  2..4000, so a world-sized label is either sub-pixel or screen-filling), and file names go
+  only to touched files plus — past a zoom threshold — the idle ones still on screen, capped
+  at a 48-sprite pool whose slots stay bound to a path so a new event does not repaint every
+  canvas. `updateLabels` runs **every frame**: positioning labels only on topology change
+  left them stranded while the force layout kept moving the nodes.
 - **Integration** (verified against a live daemon): tree seeded on connect; a Write flashes
   once across both channels; `cp *.md docs/` reports each file actually copied, credited to
   the agent; `rm -rf docs/` prunes the subtree; a non-agent edit appears with no actor.
-  **Not yet verified:** the actual in-browser visual (no browser available on this host).
+  **Not yet verified:** the actual in-browser visual (this host has no Chrome, and a headless
+  screenshot of an animated force layout proves nothing).
 
 Run: `GRAPHAGENTS_PROJECT_ROOT=/path/to/observed ./start.sh`. Point the root at the project
 you want to *watch*, not at `graph-agents`. Install attribution by copying the `hooks` block
 from `config/settings.json` into the observed project's `.claude/settings.json` — hook changes
 only apply to sessions started afterwards. Deps: `pip install -e '.[daemon]'`; the hook needs
+nothing. Rebuilding `web/dist` (or running vitest/tsc) needs Node 18+ — `start.sh` silently
+serves a stale `dist` when node is missing, so a front-end change can look like it did
 nothing. Debug an empty screen with `GRAPHAGENTS_DEBUG_LOG` on the hook command.
 
 Not yet built: per-subagent attribution (currently one actor per session), custom avatar

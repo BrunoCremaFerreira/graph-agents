@@ -10,5 +10,9 @@ venv/
 node_modules/
 web/dist/
 
+# Claude Code: agents are project config and are committed; local permission
+# grants are personal and are not.
+.claude/settings.local.json
+
 # Editors / OS
 .DS_Store

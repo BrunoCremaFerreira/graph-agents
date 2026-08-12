@@ -50,6 +50,14 @@ import {
   zoomAt,
   type ViewState,
 } from "./view";
+import {
+  fileLabelOpacity,
+  labelOffset,
+  labelWorldHeight,
+  selectFileLabels,
+  MAX_FILE_LABELS,
+  type LabelCandidate,
+} from "./labels";
 
 /** A transient animated line from an actor to a file it just touched. */
 interface Beam {
@@ -70,6 +78,19 @@ interface ActorView {
   /** The Gource-style figure that walks the tree. */
   figure: Sprite;
   label: Sprite;
+}
+
+/**
+ * One reusable file-name sprite.
+ *
+ * The pool is fixed at {@link MAX_FILE_LABELS}; slots are handed to whichever
+ * files {@link selectFileLabels} picks this frame. Retexturing only when `path`
+ * changes is what keeps a canvas out of the per-frame path.
+ */
+interface FileLabelSlot {
+  sprite: Sprite;
+  /** Path currently drawn, or `""` when the slot is parked. */
+  path: string;
 }
 
 const MAX_BEAMS = 512;
@@ -131,6 +152,12 @@ export class GourceRenderer {
 
   private readonly actors = new Map<string, ActorView>();
   private readonly dirLabels = new Map<string, Sprite>();
+  private readonly fileLabels: FileLabelSlot[] = [];
+  // Reused across frames and refilled in place: one object per file per frame
+  // would be hundreds of allocations a second on a real project.
+  private readonly labelCandidates: LabelCandidate[] = [];
+  /** Scratch for the slot assignment below; cleared and refilled each frame. */
+  private readonly chosenByPath = new Map<string, LabelCandidate>();
   private readonly beams: Beam[] = [];
 
   private view: ViewState = createView(60);
@@ -182,6 +209,16 @@ export class GourceRenderer {
     this.bloom = new UnrealBloomPass(new Vector2(canvas.clientWidth, canvas.clientHeight), 1.1, 0.6, 0.05);
     this.composer.addPass(this.bloom);
     this.composer.addPass(new OutputPass());
+
+    for (let i = 0; i < MAX_FILE_LABELS; i += 1) {
+      const sprite = new Sprite(
+        new SpriteMaterial({ transparent: true, depthTest: false, opacity: 0 }),
+      );
+      sprite.visible = false;
+      sprite.userData.aspect = 1;
+      this.scene.add(sprite);
+      this.fileLabels.push({ sprite, path: "" });
+    }
 
     this.bindInput();
     this.resize();
@@ -335,6 +372,10 @@ export class GourceRenderer {
     this.updateActors(dt);
     this.updateBeams(dt);
     this.updateCamera(model);
+    // Last: labels are sized from the zoom `updateCamera` just settled on, and
+    // positioned from the layout that moved this frame. Doing this only on
+    // topology changes is what left directory names stranded behind their nodes.
+    this.updateLabels(model);
 
     this.composer.render();
   }
@@ -437,7 +478,8 @@ export class GourceRenderer {
         actor.figure.visible = true;
         (actor.figure.material as SpriteMaterial).opacity = alpha;
 
-        actor.label.position.set(actor.x, actor.y + AVATAR_WORLD_HEIGHT + 1.5, 2);
+        // Placement and size are `updateLabels`' job, which runs after the
+        // camera has settled; here we only say whether the name is shown.
         actor.label.visible = true;
         (actor.label.material as SpriteMaterial).opacity = alpha;
       } else {
@@ -544,7 +586,7 @@ export class GourceRenderer {
     this.scene.add(figure);
 
     // Session ids are long; the tail is what distinguishes two agents.
-    const label = makeLabel(shortAgentName(agent), color, 0.6);
+    const label = makeLabel(shortAgentName(agent), color);
     label.visible = false;
     this.scene.add(label);
 
@@ -563,24 +605,146 @@ export class GourceRenderer {
   private ensureDirLabel(path: string): void {
     if (this.dirLabels.has(path)) return;
     const name = path.slice(path.lastIndexOf("/") + 1);
-    const sprite = makeLabel(name, DIR_COLOR, 0.7);
+    const sprite = makeLabel(name, DIR_COLOR);
     this.scene.add(sprite);
     this.dirLabels.set(path, sprite);
   }
 
+  /** Drop the sprites of directories that no longer exist. */
   private pruneDirLabels(): void {
     for (const [path, sprite] of this.dirLabels) {
-      const p = this.layout.position(path);
-      if (!this.nodeIndex.has(path)) {
-        this.scene.remove(sprite);
-        (sprite.material as SpriteMaterial).map?.dispose();
-        (sprite.material as SpriteMaterial).dispose();
-        this.dirLabels.delete(path);
-      } else if (p) {
-        sprite.position.set(p.x, p.y + 3, 1);
-      }
+      if (this.nodeIndex.has(path)) continue;
+      this.scene.remove(sprite);
+      (sprite.material as SpriteMaterial).map?.dispose();
+      (sprite.material as SpriteMaterial).dispose();
+      this.dirLabels.delete(path);
     }
   }
+
+  /**
+   * Place, size and fade every name on screen. Runs each frame, because both
+   * inputs move each frame: the force layout keeps pushing nodes around, and
+   * the label's world size depends on the current zoom.
+   */
+  private updateLabels(model: readonly SimNode[]): void {
+    const viewportHeight = this.canvas.clientHeight || window.innerHeight;
+    const worldHeight = labelWorldHeight(this.view.halfHeight, viewportHeight);
+    const offset = labelOffset(worldHeight);
+
+    for (const [path, sprite] of this.dirLabels) {
+      const p = this.layout.position(path);
+      if (!p) {
+        sprite.visible = false;
+        continue;
+      }
+      sprite.visible = true;
+      sprite.position.set(p.x, p.y + offset, 1);
+      sizeLabel(sprite, worldHeight);
+    }
+
+    for (const actor of this.actors.values()) {
+      if (!actor.label.visible) continue;
+      actor.label.position.set(actor.x, actor.y + AVATAR_WORLD_HEIGHT + offset, 2);
+      sizeLabel(actor.label, worldHeight);
+    }
+
+    this.updateFileLabels(model, worldHeight, offset);
+  }
+
+  /** Hand the sprite pool to the files that earned a name this frame. */
+  private updateFileLabels(model: readonly SimNode[], worldHeight: number, offset: number): void {
+    const candidates = this.labelCandidates;
+    let count = 0;
+    for (const node of model) {
+      if (node.kind !== "file") continue;
+      const p = this.layout.position(node.path);
+      if (!p) continue;
+      let candidate = candidates[count];
+      if (!candidate) {
+        candidate = { path: "", highlight: 0, x: 0, y: 0 };
+        candidates.push(candidate);
+      }
+      candidate.path = node.path;
+      candidate.highlight = node.highlight;
+      candidate.x = p.x;
+      candidate.y = p.y;
+      count += 1;
+    }
+    candidates.length = count;
+
+    const chosen = selectFileLabels(
+      candidates,
+      {
+        centerX: this.view.centerX,
+        centerY: this.view.centerY,
+        halfHeight: this.view.halfHeight,
+        aspect: this.aspect(),
+      },
+      this.fileLabels.length,
+    );
+
+    // Slots are assigned by identity, not by rank. Handing slot `i` to the i-th
+    // hottest file would mean every new event shifts the whole list down one and
+    // repaints every canvas; keeping a file on the sprite it already owns limits
+    // repainting to the files actually entering or leaving the selection.
+    const pending = this.chosenByPath;
+    pending.clear();
+    for (const pick of chosen) pending.set(pick.path, pick);
+
+    for (const slot of this.fileLabels) {
+      const held = slot.path ? pending.get(slot.path) : undefined;
+      if (!held) {
+        slot.sprite.visible = false;
+        slot.path = "";
+        continue;
+      }
+      pending.delete(slot.path);
+      this.drawFileLabel(slot, held, worldHeight, offset);
+    }
+
+    const incoming = pending.values();
+    for (const slot of this.fileLabels) {
+      if (slot.path) continue;
+      const next = incoming.next();
+      if (next.done) break;
+      this.retextureFileLabel(slot, next.value.path);
+      this.drawFileLabel(slot, next.value, worldHeight, offset);
+    }
+  }
+
+  /** Position, size and fade one assigned file label. */
+  private drawFileLabel(
+    slot: FileLabelSlot,
+    pick: LabelCandidate,
+    worldHeight: number,
+    offset: number,
+  ): void {
+    slot.sprite.visible = true;
+    slot.sprite.position.set(pick.x, pick.y + offset, 1);
+    sizeLabel(slot.sprite, worldHeight);
+    (slot.sprite.material as SpriteMaterial).opacity = fileLabelOpacity(
+      pick.highlight,
+      this.view.halfHeight,
+    );
+  }
+
+  /** Repaint a pooled sprite for a different file, disposing the old texture. */
+  private retextureFileLabel(slot: FileLabelSlot, path: string): void {
+    const material = slot.sprite.material as SpriteMaterial;
+    material.map?.dispose();
+    const name = path.slice(path.lastIndexOf("/") + 1);
+    const { texture, aspect } = makeLabelTexture(name, fileColor(path));
+    material.map = texture;
+    material.needsUpdate = true;
+    slot.sprite.userData.aspect = aspect;
+    slot.path = path;
+  }
+}
+
+/** Scale a label sprite to `worldHeight`, preserving its text's aspect ratio. */
+function sizeLabel(sprite: Sprite, worldHeight: number): void {
+  const aspect = (sprite.userData.aspect as number | undefined) ?? 1;
+  sprite.scale.set(aspect * worldHeight, worldHeight, 1);
 }
 
 /** Shared scratch color to avoid per-frame allocation in the lerp path. */
@@ -612,8 +776,13 @@ function shortAgentName(agent: string): string {
   return tail.length > 8 ? tail.slice(0, 8) : tail || agent;
 }
 
-/** Build a text label sprite (white-ish text tinted by `color`). */
-function makeLabel(text: string, color: number, scale = 1): Sprite {
+/**
+ * Render `text` to a texture, with the aspect ratio the sprite must keep.
+ *
+ * Split out from {@link makeLabel} so the file-label pool can repaint a sprite
+ * it already owns instead of building a new one every time the selection moves.
+ */
+function makeLabelTexture(text: string, color: number): { texture: CanvasTexture; aspect: number } {
   const canvas = document.createElement("canvas");
   const ctx = canvas.getContext("2d")!;
   const font = 48;
@@ -622,16 +791,27 @@ function makeLabel(text: string, color: number, scale = 1): Sprite {
   const pad = 12;
   canvas.width = Math.ceil(metrics.width) + pad * 2;
   canvas.height = font + pad * 2;
+  // Resizing the canvas resets the context, so the font has to be set again.
   ctx.font = `${font}px system-ui, sans-serif`;
   ctx.textBaseline = "middle";
   ctx.fillStyle = `#${color.toString(16).padStart(6, "0")}`;
   ctx.fillText(text, pad, canvas.height / 2);
 
-  const texture = new CanvasTexture(canvas);
+  return { texture: new CanvasTexture(canvas), aspect: canvas.width / canvas.height };
+}
+
+/**
+ * Build a text label sprite (white-ish text tinted by `color`).
+ *
+ * The sprite is left unscaled: `updateLabels` sizes it every frame from the
+ * current zoom, so that a name stays the same number of pixels tall whether the
+ * camera is framing one file or the whole project.
+ */
+function makeLabel(text: string, color: number): Sprite {
+  const { texture, aspect } = makeLabelTexture(text, color);
   const material = new SpriteMaterial({ map: texture, transparent: true, depthTest: false, opacity: 0.9 });
   const sprite = new Sprite(material);
-  const worldH = 4 * scale;
-  sprite.scale.set((canvas.width / canvas.height) * worldH, worldH, 1);
+  sprite.userData.aspect = aspect;
   return sprite;
 }
 

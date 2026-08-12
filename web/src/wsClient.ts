@@ -5,14 +5,17 @@
  * silently. Dropped connections reconnect with capped exponential backoff.
  */
 
-import { parseEvent, type AgentEvent } from "./protocol";
+import { parseEvent, parseMeta, type AgentEvent, type DaemonMeta } from "./protocol";
 
 export type EventSink = (event: AgentEvent) => void;
+export type MetaSink = (meta: DaemonMeta) => void;
 
 export interface WsClientOptions {
   /** Backoff floor / ceiling in ms. */
   readonly minDelayMs?: number;
   readonly maxDelayMs?: number;
+  /** Where meta frames go. Absent means meta frames are dropped in silence. */
+  readonly onMeta?: MetaSink;
 }
 
 /** Used only outside a browser (tests, SSR); real pages derive from location. */
@@ -46,6 +49,7 @@ export class WsClient {
   private delay: number;
   private readonly minDelay: number;
   private readonly maxDelay: number;
+  private readonly onMeta: MetaSink | undefined;
 
   constructor(
     private readonly url: string,
@@ -54,6 +58,7 @@ export class WsClient {
   ) {
     this.minDelay = options.minDelayMs ?? 500;
     this.maxDelay = options.maxDelayMs ?? 8000;
+    this.onMeta = options.onMeta;
     this.delay = this.minDelay;
   }
 
@@ -92,6 +97,13 @@ export class WsClient {
     } catch {
       return;
     }
+    const meta = parseMeta(raw);
+    if (meta) {
+      // A frame the HUD claims never reaches the simulation, with or without a
+      // meta sink: routing it on as an event would grow a node for the root.
+      this.onMeta?.(meta);
+      return;
+    }
     const event = parseEvent(raw);
     if (event) this.onEvent(event);
   }
@@ -107,6 +119,10 @@ export class WsClient {
 }
 
 /** Convenience factory used by `main.ts`. */
-export function createWsClient(onEvent: EventSink, url = resolveWsUrl()): WsClient {
-  return new WsClient(url, onEvent);
+export function createWsClient(
+  onEvent: EventSink,
+  url = resolveWsUrl(),
+  options: WsClientOptions = {},
+): WsClient {
+  return new WsClient(url, onEvent, options);
 }

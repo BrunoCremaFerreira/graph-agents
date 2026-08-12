@@ -48,6 +48,7 @@ from websockets.datastructures import Headers
 from websockets.http11 import Request, Response
 
 from graphagents.normalize import Event, fs_event, normalize_event, seed_event
+from graphagents.repo import display_root, read_branch
 from graphagents.tree import scan_tree
 
 LOGGER = logging.getLogger("graphagents.daemon")
@@ -69,6 +70,13 @@ DEDUPE_WINDOW_SECONDS = 2.0
 #: that same write. Writing a file emits created+modified milliseconds apart.
 COALESCE_WINDOW_SECONDS = 0.75
 
+#: How often the observed repository is re-read for the HUD's branch. Polling is
+#: the only way to see a checkout: the watcher filters paths through
+#: ``tree.is_ignored``, which drops every dotted directory segment, so `.git/HEAD`
+#: is invisible to it by design -- otherwise a single `git status` would flood the
+#: graph with index churn. One small file read every couple of seconds is free.
+REPO_POLL_INTERVAL_SECONDS = 2.0
+
 REPO_ROOT = Path(__file__).resolve().parent.parent
 WEB_DIST = REPO_ROOT / "web" / "dist"
 
@@ -84,6 +92,10 @@ class EventHub:
       * ``_seed`` / ``_recent`` -- what a connecting client is replayed. The seed
         snapshot is kept apart from the ring buffer so ordinary traffic can never
         push the tree itself out of the replay.
+      * ``_meta`` -- the HUD's context line (observed root, current branch). One
+        replaceable slot of its own, for the same reason: it is re-published on
+        every branch switch, and appending it to either list would let a busy
+        session grow the replay or evict the tree from it.
       * ``_last_hook`` -- the agent that acted most recently, which is how a
         filesystem change gets attributed to whoever caused it (see
         :meth:`ingest_fs_change`).
@@ -102,6 +114,7 @@ class EventHub:
         self._known_paths: set[str] = set()
         self._seed: list[str] = []
         self._recent: deque[str] = deque(maxlen=buffer_size)
+        self._meta: str | None = None
         self._clients: set[ServerConnection] = set()
         self._attribution_window = attribution_window
         self._dedupe_window = dedupe_window
@@ -114,8 +127,13 @@ class EventHub:
     # -- WebSocket side ----------------------------------------------------
 
     def replay_messages(self) -> list[str]:
-        """Everything a client connecting right now must receive, in order."""
-        return [*self._seed, *self._recent]
+        """Everything a client connecting right now must receive, in order.
+
+        The meta line goes first so the HUD is captioned before the first node
+        appears; there is none until the daemon has looked at the repository.
+        """
+        meta = [self._meta] if self._meta is not None else []
+        return [*meta, *self._seed, *self._recent]
 
     async def register(self, websocket: ServerConnection) -> None:
         """Add a client and replay the tree plus recent activity."""
@@ -128,6 +146,23 @@ class EventHub:
         self._clients.discard(websocket)
 
     # -- Ingest side -------------------------------------------------------
+
+    def set_meta(self, display_root: str, branch: str | None) -> None:
+        """Publish the HUD's context line, but only when it actually changed.
+
+        The daemon polls the repository every couple of seconds, so identical
+        values arrive over and over; re-broadcasting them would be pure noise on
+        the wire. ``branch`` is ``None`` when the observed directory is not a
+        git checkout.
+        """
+        message = json.dumps(
+            {"kind": "meta", "root": display_root, "branch": branch},
+            separators=(",", ":"),
+        )
+        if message == self._meta:
+            return
+        self._meta = message
+        broadcast(self._clients, message)
 
     def seed_paths(self, paths: Iterable[str]) -> None:
         """Publish the project's existing files as the graph's starting tree.
@@ -388,12 +423,32 @@ def _start_watcher(hub: EventHub, project_root: str):
     return watcher
 
 
+async def _poll_repo(
+    hub: EventHub,
+    project_root: str,
+    interval: float = REPO_POLL_INTERVAL_SECONDS,
+) -> None:
+    """Keep the HUD's branch honest for the life of the daemon.
+
+    `set_meta` filters out the unchanged readings, so this loop can be dumb: it
+    only has to run often enough that a `git switch` shows up while the viewer
+    is still wondering what happened.
+    """
+    shown_root = display_root(project_root, os.path.expanduser("~"))
+    while True:
+        await asyncio.sleep(interval)
+        hub.set_meta(shown_root, read_branch(project_root))
+
+
 async def run(
     socket_path: str,
     http_port: int,
     project_root: str,
 ) -> None:
     hub = EventHub(project_root=project_root)
+    hub.set_meta(
+        display_root(project_root, os.path.expanduser("~")), read_branch(project_root)
+    )
 
     seeded = scan_tree(project_root)
     hub.seed_paths(seeded)
@@ -407,6 +462,7 @@ async def run(
     )
 
     watcher = _start_watcher(hub, project_root)
+    repo_poll = asyncio.create_task(_poll_repo(hub, project_root))
 
     static_root: Path | None = WEB_DIST if WEB_DIST.is_dir() else None
     if static_root is None:
@@ -435,6 +491,9 @@ async def run(
             with contextlib.suppress(asyncio.CancelledError):
                 await stop
     finally:
+        repo_poll.cancel()
+        with contextlib.suppress(asyncio.CancelledError):
+            await repo_poll
         if watcher is not None:
             watcher.stop()
     with contextlib.suppress(FileNotFoundError):

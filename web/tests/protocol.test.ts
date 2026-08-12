@@ -77,4 +77,13 @@ describe("parseEvent", () => {
     expect(() => parseEvent("garbage")).not.toThrow();
     expect(() => parseEvent({ type: "Z" })).not.toThrow();
   });
+
+  it("rejects the daemon's meta frame, which is not an event", () => {
+    // The HUD frame shares the socket with events. If parseEvent ever accepted
+    // one, the graph would grow a node for the observed root's own path.
+    // Mirror of the parseMeta side in tests/meta.test.ts.
+    expect(
+      parseEvent({ kind: "meta", root: "~/projects/graph-agents", branch: "development" }),
+    ).toBeNull();
+  });
 });

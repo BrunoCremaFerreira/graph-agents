@@ -90,3 +90,69 @@ export function parseEvent(raw: unknown): AgentEvent | null {
 
   return { ts, agent, type: type as EventType, path, color, origin: resolvedOrigin };
 }
+
+/**
+ * What the daemon is observing, announced on the same socket as the events.
+ *
+ * Discriminated from {@link AgentEvent} by a `kind: "meta"` field the events do
+ * not carry, so neither parser can accept the other's frame.
+ */
+export interface DaemonMeta {
+  /** The observed project root, as the daemon wants it displayed. */
+  root: string;
+  /** Current git branch, or `null` when the root is not a git repository. */
+  branch: string | null;
+}
+
+/**
+ * Validate and parse a raw WebSocket message into a {@link DaemonMeta}.
+ *
+ * Contract (see tests/meta.test.ts):
+ *   - Returns `null` for a non-object, for a missing/mistyped `root`, and for
+ *     anything whose `kind` is not exactly `"meta"` (which is what keeps an
+ *     activity event out).
+ *   - A missing or mistyped `branch` degrades to `null` instead of rejecting
+ *     the frame: `null` is the legitimate not-a-git-repo case anyway, and a
+ *     page served by an older daemon must still show the path.
+ *   - NEVER throws.
+ *
+ * @param raw The value received from the socket (already JSON-parsed or not).
+ */
+export function parseMeta(raw: unknown): DaemonMeta | null {
+  if (!isRecord(raw)) return null;
+
+  const { kind, root, branch } = raw;
+
+  if (kind !== "meta") return null;
+  if (typeof root !== "string") return null;
+
+  return { root, branch: typeof branch === "string" ? branch : null };
+}
+
+/** Marker standing in for the elided middle of a truncated string. */
+const ELISION = "…";
+
+/**
+ * Shorten `text` to at most `max` characters by eliding its MIDDLE.
+ *
+ * Clipping the tail (what CSS ellipsis does) would throw away the segment that
+ * names the project — every checkout under `~/projects` renders identically.
+ * Head and tail both survive here; the cut lands between them.
+ *
+ * When it has to cut, the result is exactly `max` characters long. `max <= 0`,
+ * `NaN`, and empty text all yield `""` rather than throwing.
+ */
+export function truncateMiddle(text: string, max: number): string {
+  if (text.length === 0) return "";
+  if (!Number.isFinite(max) || max <= 0) return "";
+
+  const limit = Math.floor(max);
+  if (text.length <= limit) return text;
+  if (limit <= ELISION.length) return text.slice(0, limit);
+
+  const keep = limit - ELISION.length;
+  const head = Math.ceil(keep / 2);
+  const tail = keep - head;
+
+  return text.slice(0, head) + ELISION + (tail > 0 ? text.slice(text.length - tail) : "");
+}

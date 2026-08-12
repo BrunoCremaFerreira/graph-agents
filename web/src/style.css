@@ -26,3 +26,36 @@ body {
   display: block;
   color: #5c6067;
 }
+
+/*
+ * Observed root + git branch, bottom centre. `pointer-events: none` is
+ * load-bearing: the canvas handles `pointerdown` for panning, so anything
+ * painted on top of it would swallow a drag that started here.
+ */
+#context {
+  position: fixed;
+  bottom: 10px;
+  left: 50%;
+  transform: translateX(-50%);
+  max-width: 50vw;
+  color: #8a8f98;
+  font: 12px/1.4 system-ui, sans-serif;
+  white-space: nowrap;
+  text-align: center;
+  pointer-events: none;
+  user-select: none;
+}
+
+#context #context-branch {
+  color: #b3b8c1;
+}
+
+/* Separator lives on the branch span so hiding it leaves no orphan. */
+#context #context-branch::before {
+  content: " · ";
+  color: #5c6067;
+}
+
+#context #context-branch[hidden] {
+  display: none;
+}

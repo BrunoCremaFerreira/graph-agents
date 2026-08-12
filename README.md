@@ -118,11 +118,15 @@ Environment variables (all optional):
 | Variable | Default | Description |
 |---|---|---|
 | `GRAPHAGENTS_SOCKET` | `/tmp/graph-agents.sock` | Ingest Unix socket (hook ↔ daemon). |
-| `GRAPHAGENTS_WS_PORT` | `8765` | WebSocket port (browser). |
-| `GRAPHAGENTS_HTTP_PORT` | `8080` | HTTP port serving `web/dist`. |
+| `GRAPHAGENTS_HTTP_PORT` | `8080` | Single port serving `web/dist` **and** the WebSocket at `/ws`. |
 | `GRAPHAGENTS_PROJECT_ROOT` | cwd | Root against which paths are made relative in the graph. |
 
 The socket must match between the hook and the daemon; if you change one, change the other.
+
+`GRAPHAGENTS_WS_PORT` is obsolete: the page and the WebSocket share one port, so the browser
+derives the socket URL from the origin it loaded from. Viewing over SSH or VS Code remote
+therefore needs only `GRAPHAGENTS_HTTP_PORT` forwarded — a hard-coded `localhost` WebSocket
+port would otherwise resolve to the *viewer's* machine and never connect.
 
 ---
 

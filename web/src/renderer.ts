@@ -35,6 +35,20 @@ import type { AgentEvent } from "./protocol";
 import type { SimNode, Simulation } from "./simulation";
 import { ForceLayout } from "./layout";
 import { fileColor, hashColor, hexToInt } from "./colors";
+import {
+  allocateEdgeAttributes,
+  allocateNodeAttributes,
+  createEdgeGeometry,
+  createNodeGeometry,
+} from "./geometry";
+import {
+  createView,
+  follow,
+  panByPixels,
+  releaseToAuto,
+  zoomAt,
+  type ViewState,
+} from "./view";
 
 /** A transient animated line from an actor to a file it just touched. */
 interface Beam {
@@ -91,11 +105,17 @@ export class GourceRenderer {
   private readonly layout = new ForceLayout();
 
   private readonly nodePoints: Points;
-  private readonly nodeGeom = new BufferGeometry();
+  // Allocated empty (not bare) so the first frame -- which runs before any
+  // event arrives, and therefore triggers no rebuild -- still finds attributes.
+  private readonly nodeGeom = createNodeGeometry(0);
   private readonly edges: LineSegments;
-  private readonly edgeGeom = new BufferGeometry();
+  private readonly edgeGeom = createEdgeGeometry(0);
   private readonly beamLines: LineSegments;
   private readonly beamGeom = new BufferGeometry();
+  private dragPointer: number | null = null;
+  private dragX = 0;
+  private dragY = 0;
+  private readonly reportedFrameErrors = new Set<string>();
   private readonly beamPos = new Float32Array(MAX_BEAMS * 2 * 3);
   private readonly beamColor = new Float32Array(MAX_BEAMS * 2 * 3);
 
@@ -108,8 +128,7 @@ export class GourceRenderer {
   private readonly dirLabels = new Map<string, Sprite>();
   private readonly beams: Beam[] = [];
 
-  private viewHalfHeight = 60;
-  private viewCenter = new Vector2(0, 0);
+  private view: ViewState = createView(60);
   private lastTime = 0;
   private running = false;
   private readonly scratchColor = new Color();
@@ -121,7 +140,8 @@ export class GourceRenderer {
     this.scene.background = new Color(0x000000);
 
     const aspect = canvas.clientWidth / Math.max(1, canvas.clientHeight);
-    this.camera = new OrthographicCamera(-this.viewHalfHeight * aspect, this.viewHalfHeight * aspect, this.viewHalfHeight, -this.viewHalfHeight, 0.1, 1000);
+    const half = this.view.halfHeight;
+    this.camera = new OrthographicCamera(-half * aspect, half * aspect, half, -half, 0.1, 1000);
     this.camera.position.set(0, 0, 100);
 
     const pointMaterial = new ShaderMaterial({
@@ -158,7 +178,74 @@ export class GourceRenderer {
     this.composer.addPass(this.bloom);
     this.composer.addPass(new OutputPass());
 
+    this.bindInput();
     this.resize();
+  }
+
+  /**
+   * Wheel to zoom under the cursor, drag to pan, double-click to resume
+   * auto-fit. Without this the camera reframes the whole graph every frame and
+   * labels are unreadable as soon as the tree grows.
+   */
+  private bindInput(): void {
+    this.canvas.addEventListener(
+      "wheel",
+      (event: WheelEvent) => {
+        event.preventDefault();
+        // One notch ~= 10%; trackpads send many small deltas, so scale by size.
+        const factor = Math.exp(event.deltaY * 0.0015);
+        this.view = zoomAt(this.view, factor, this.pointerNdc(event), this.aspect());
+        this.syncCamera();
+      },
+      { passive: false },
+    );
+
+    this.canvas.addEventListener("pointerdown", (event: PointerEvent) => {
+      this.dragPointer = event.pointerId;
+      this.dragX = event.clientX;
+      this.dragY = event.clientY;
+      this.canvas.setPointerCapture(event.pointerId);
+      this.canvas.style.cursor = "grabbing";
+    });
+
+    this.canvas.addEventListener("pointermove", (event: PointerEvent) => {
+      if (this.dragPointer !== event.pointerId) return;
+      const dx = event.clientX - this.dragX;
+      const dy = event.clientY - this.dragY;
+      this.dragX = event.clientX;
+      this.dragY = event.clientY;
+      this.view = panByPixels(this.view, dx, dy, {
+        width: this.canvas.clientWidth || window.innerWidth,
+        height: this.canvas.clientHeight || window.innerHeight,
+      });
+      this.syncCamera();
+    });
+
+    const endDrag = (event: PointerEvent): void => {
+      if (this.dragPointer !== event.pointerId) return;
+      this.dragPointer = null;
+      this.canvas.style.cursor = "grab";
+      if (this.canvas.hasPointerCapture(event.pointerId)) {
+        this.canvas.releasePointerCapture(event.pointerId);
+      }
+    };
+    this.canvas.addEventListener("pointerup", endDrag);
+    this.canvas.addEventListener("pointercancel", endDrag);
+
+    this.canvas.addEventListener("dblclick", () => {
+      this.view = releaseToAuto(this.view);
+    });
+
+    this.canvas.style.cursor = "grab";
+  }
+
+  /** Pointer position in normalized device coordinates (y up). */
+  private pointerNdc(event: MouseEvent): { x: number; y: number } {
+    const rect = this.canvas.getBoundingClientRect();
+    return {
+      x: ((event.clientX - rect.left) / Math.max(1, rect.width)) * 2 - 1,
+      y: -(((event.clientY - rect.top) / Math.max(1, rect.height)) * 2 - 1),
+    };
   }
 
   /** Register a discrete event for its visual effect (actor beam + flash). */
@@ -179,8 +266,16 @@ export class GourceRenderer {
       if (!this.running) return;
       const dt = Math.min(0.05, (now - this.lastTime) / 1000);
       this.lastTime = now;
-      this.frame(dt);
-      requestAnimationFrame(loop);
+      try {
+        this.frame(dt);
+      } catch (error) {
+        // One bad frame must not end the animation: scheduling the next frame
+        // from `finally` keeps a transient fault transient instead of leaving
+        // a permanently black canvas.
+        this.reportFrameError(error);
+      } finally {
+        requestAnimationFrame(loop);
+      }
     };
     requestAnimationFrame(loop);
   }
@@ -197,6 +292,14 @@ export class GourceRenderer {
     this.composer.setSize(w, h);
     this.bloom.setSize(w, h);
     this.applyCameraFrustum(w / Math.max(1, h));
+  }
+
+  /** Log a failing frame once per distinct message, so it never floods. */
+  private reportFrameError(error: unknown): void {
+    const message = error instanceof Error ? error.message : String(error);
+    if (this.reportedFrameErrors.has(message)) return;
+    this.reportedFrameErrors.add(message);
+    console.error("graph-agents: frame failed:", error);
   }
 
   private frame(dt: number): void {
@@ -242,12 +345,8 @@ export class GourceRenderer {
       if (node.kind === "dir") this.ensureDirLabel(node.path);
     }
 
-    this.nodeGeom.setAttribute("position", new BufferAttribute(new Float32Array(n * 3), 3));
-    this.nodeGeom.setAttribute("aColor", new BufferAttribute(new Float32Array(n * 3), 3));
-    this.nodeGeom.setAttribute("aSize", new BufferAttribute(new Float32Array(n), 1));
-
-    const edgeCount = this.edgeChild.length;
-    this.edgeGeom.setAttribute("position", new BufferAttribute(new Float32Array(edgeCount * 2 * 3), 3));
+    allocateNodeAttributes(this.nodeGeom, n);
+    allocateEdgeAttributes(this.edgeGeom, this.edgeChild.length);
 
     this.pruneDirLabels();
   }
@@ -377,17 +476,23 @@ export class GourceRenderer {
     const targetCY = (minY + maxY) / 2;
     const spanY = Math.max(maxY - minY, (maxX - minX) / Math.max(0.0001, this.aspect())) * 0.5 + 20;
 
-    const ease = 0.05;
-    this.viewCenter.x += (targetCX - this.viewCenter.x) * ease;
-    this.viewCenter.y += (targetCY - this.viewCenter.y) * ease;
-    this.viewHalfHeight += (spanY - this.viewHalfHeight) * ease;
+    // `follow` is a no-op once the user has zoomed or panned.
+    this.view = follow(
+      this.view,
+      { centerX: targetCX, centerY: targetCY, halfHeight: spanY },
+      0.05,
+    );
+    this.syncCamera();
+  }
 
-    this.camera.position.set(this.viewCenter.x, this.viewCenter.y, 100);
+  /** Copy the view state onto the camera. */
+  private syncCamera(): void {
+    this.camera.position.set(this.view.centerX, this.view.centerY, 100);
     this.applyCameraFrustum(this.aspect());
   }
 
   private applyCameraFrustum(aspect: number): void {
-    const halfH = this.viewHalfHeight;
+    const halfH = this.view.halfHeight;
     const halfW = halfH * aspect;
     this.camera.left = -halfW;
     this.camera.right = halfW;

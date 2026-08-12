@@ -21,3 +21,8 @@ body {
   pointer-events: none;
   user-select: none;
 }
+
+#hud .keys {
+  display: block;
+  color: #5c6067;
+}

@@ -5,7 +5,7 @@
 # Faz tudo a partir do zero:
 #   1. cria/prepara a venv Python e instala as deps do daemon;
 #   2. (se possível) instala deps do front e gera web/dist;
-#   3. sobe o daemon: WebSocket (broadcast) + HTTP (serve o front) + ingest dos hooks.
+#   3. sobe o daemon: HTTP (serve o front) + WebSocket (/ws) na MESMA porta + ingest.
 #
 # Uso:
 #   ./start.sh                # prod: garante o build e serve web/dist em http://localhost:8080
@@ -16,8 +16,9 @@
 #
 # Variáveis de ambiente (com defaults):
 #   GRAPHAGENTS_SOCKET     /tmp/graph-agents.sock   socket Unix de ingest dos hooks
-#   GRAPHAGENTS_WS_PORT    8765                     porta do WebSocket
-#   GRAPHAGENTS_HTTP_PORT  8080                     porta HTTP que serve web/dist
+#   GRAPHAGENTS_HTTP_PORT  8080                     porta única: serve web/dist E o
+#                                                   WebSocket em /ws (uma só porta
+#                                                   encaminhada basta via SSH)
 #   GRAPHAGENTS_PROJECT_ROOT  (cwd)                 raiz cujos paths viram relativos no grafo
 #   PYTHON  NODE  NPM      overrides dos executáveis
 #
@@ -94,14 +95,13 @@ fi
 
 # ---- 3. env do daemon ------------------------------------------------------
 export GRAPHAGENTS_SOCKET="${GRAPHAGENTS_SOCKET:-/tmp/graph-agents.sock}"
-export GRAPHAGENTS_WS_PORT="${GRAPHAGENTS_WS_PORT:-8765}"
 export GRAPHAGENTS_HTTP_PORT="${GRAPHAGENTS_HTTP_PORT:-8080}"
 export GRAPHAGENTS_PROJECT_ROOT="${GRAPHAGENTS_PROJECT_ROOT:-$PWD}"
 
 echo
 log "graph-agents"
 echo "  ingest socket : $GRAPHAGENTS_SOCKET"
-echo "  websocket     : ws://localhost:$GRAPHAGENTS_WS_PORT"
+echo "  page + socket : http://localhost:$GRAPHAGENTS_HTTP_PORT (ws em /ws)"
 echo "  project root  : $GRAPHAGENTS_PROJECT_ROOT"
 echo "  hooks         : copie o bloco \"hooks\" de config/settings.json para o"
 echo "                  .claude/settings.json do projeto que você quer observar."

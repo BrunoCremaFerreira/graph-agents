@@ -8,14 +8,18 @@ Two servers share one event loop:
     payloads from :mod:`hooks.emit_event`. Each line is normalized here, which
     is also where the "already seen paths" set lives (single source of truth for
     add-vs-modify), so the hook stays a dumb, dependency-free forwarder.
-  * **Broadcast** -- a WebSocket server (``GRAPHAGENTS_WS_PORT``, default 8765)
-    that relays every normalized event to all connected browsers as JSON. A new
-    client first receives a short replay of the most recent events so the graph
-    never starts empty.
+  * **Broadcast** -- a WebSocket at ``/ws`` relaying every normalized event to
+    all connected browsers as JSON. A new client first receives a short replay
+    of the most recent events so the graph never starts empty.
 
-Optionally serves the built frontend from ``web/dist`` over plain HTTP
-(``GRAPHAGENTS_HTTP_PORT``, default 8080) when that directory exists; otherwise
-the Vite dev server is expected to host the front and connect to the WS port.
+Both the WebSocket and the built frontend in ``web/dist`` are served from a
+*single* port (``GRAPHAGENTS_HTTP_PORT``, default 8080): a request arrives as a
+WebSocket upgrade or as a plain GET, and one listener answers both. That means a
+remote viewer (SSH or VS Code port forwarding) needs exactly one forwarded port,
+and the page derives its socket URL from the origin it was loaded from -- a
+separate WS port would resolve to the *viewer's* machine and never connect.
+When ``web/dist`` is absent the Vite dev server hosts the front and proxies
+``/ws`` here.
 
 Unlike the hook, the daemon may use third-party dependencies (``websockets``).
 Robustness rule: one misbehaving or disconnecting client must never take down
@@ -29,20 +33,23 @@ import contextlib
 import functools
 import json
 import logging
+import mimetypes
 import os
 import signal
+import urllib.parse
 from collections import deque
 from dataclasses import asdict
 from pathlib import Path
 
-from websockets.asyncio.server import ServerConnection, broadcast, serve
+from websockets.asyncio.server import Server, ServerConnection, broadcast, serve
+from websockets.datastructures import Headers
+from websockets.http11 import Request, Response
 
 from graphagents.normalize import Event, normalize_event
 
 LOGGER = logging.getLogger("graphagents.daemon")
 
 DEFAULT_SOCKET_PATH = "/tmp/graph-agents.sock"
-DEFAULT_WS_PORT = 8765
 DEFAULT_HTTP_PORT = 8080
 REPLAY_BUFFER_SIZE = 200
 
@@ -150,29 +157,86 @@ async def _handle_ingest_client(
             writer.close()
 
 
-async def _serve_static_http(port: int) -> asyncio.AbstractServer | None:
-    """Serve ``web/dist`` over HTTP when it exists, else return ``None``."""
-    if not WEB_DIST.is_dir():
-        LOGGER.info(
-            "web/dist not found; serving WebSocket only "
-            "(let the Vite dev server host the front)."
-        )
+def _resolve_static_file(static_root: Path, raw_path: str) -> Path | None:
+    """Map a request path to a file inside ``static_root``, or ``None``.
+
+    Refuses anything resolving outside the root, so a crafted path such as
+    ``/../../etc/passwd`` can never escape the served directory.
+    """
+    path = urllib.parse.unquote(urllib.parse.urlsplit(raw_path).path)
+    candidate = (static_root / path.lstrip("/")).resolve()
+    root = static_root.resolve()
+    if candidate != root and root not in candidate.parents:
+        return None
+    if candidate.is_dir():
+        candidate = candidate / "index.html"
+    return candidate if candidate.is_file() else None
+
+
+def _http_response(status: int, body: bytes, content_type: str) -> Response:
+    reasons = {200: "OK", 404: "Not Found", 503: "Service Unavailable"}
+    headers = Headers(
+        {
+            "Content-Type": content_type,
+            "Content-Length": str(len(body)),
+            # The page must never be cached stale against a rebuilt bundle.
+            "Cache-Control": "no-cache",
+        }
+    )
+    return Response(status, reasons.get(status, "Error"), headers, body)
+
+
+def _process_request(
+    static_root: Path | None,
+    connection: ServerConnection,
+    request: Request,
+) -> Response | None:
+    """Answer plain HTTP; return ``None`` to let a WebSocket upgrade through.
+
+    This is what puts both protocols on one port: the browser loads the page
+    and opens its WebSocket over the same origin, so a single forwarded port is
+    enough for remote (SSH / VS Code) setups.
+    """
+    if request.headers.get("Upgrade", "").lower() == "websocket":
         return None
 
-    from http.server import SimpleHTTPRequestHandler, ThreadingHTTPServer
-    from threading import Thread
+    if static_root is None:
+        return _http_response(
+            503,
+            b"web/dist not built. Run: cd web && npm run build\n",
+            "text/plain; charset=utf-8",
+        )
 
-    handler = functools.partial(SimpleHTTPRequestHandler, directory=str(WEB_DIST))
-    httpd = ThreadingHTTPServer(("", port), handler)
-    Thread(target=httpd.serve_forever, name="http-static", daemon=True).start()
-    LOGGER.info("serving %s at http://localhost:%d", WEB_DIST, port)
-    # Returned handle is informational; the thread owns the lifecycle.
-    return None
+    target = _resolve_static_file(static_root, request.path)
+    if target is None:
+        return _http_response(404, b"not found\n", "text/plain; charset=utf-8")
+
+    try:
+        body = target.read_bytes()
+    except OSError:
+        return _http_response(404, b"not found\n", "text/plain; charset=utf-8")
+
+    content_type, _ = mimetypes.guess_type(target.name)
+    return _http_response(200, body, content_type or "application/octet-stream")
+
+
+async def start_server(
+    hub: EventHub,
+    host: str = "",
+    port: int = DEFAULT_HTTP_PORT,
+    static_root: Path | None = None,
+) -> Server:
+    """Start one listener answering both HTTP and WebSocket traffic."""
+    return await serve(
+        functools.partial(_handle_ws_client, hub),
+        host=host,
+        port=port,
+        process_request=functools.partial(_process_request, static_root),
+    )
 
 
 async def run(
     socket_path: str,
-    ws_port: int,
     http_port: int,
     project_root: str,
 ) -> None:
@@ -184,12 +248,21 @@ async def run(
     ingest_server = await asyncio.start_unix_server(
         functools.partial(_handle_ingest_client, hub), path=socket_path
     )
-    ws_server = await serve(
-        functools.partial(_handle_ws_client, hub), host="", port=ws_port
-    )
-    await _serve_static_http(http_port)
 
-    LOGGER.info("ingest on %s | websocket on :%d", socket_path, ws_port)
+    static_root: Path | None = WEB_DIST if WEB_DIST.is_dir() else None
+    if static_root is None:
+        LOGGER.info(
+            "web/dist not found; serving WebSocket only "
+            "(let the Vite dev server host the front)."
+        )
+    else:
+        LOGGER.info("serving %s at http://localhost:%d", static_root, http_port)
+
+    ws_server = await start_server(hub, host="", port=http_port, static_root=static_root)
+
+    LOGGER.info(
+        "ingest on %s | http + websocket on :%d", socket_path, http_port
+    )
 
     stop = asyncio.get_running_loop().create_future()
     for sig in (signal.SIGINT, signal.SIGTERM):
@@ -211,12 +284,18 @@ def main() -> None:
         format="%(asctime)s %(name)s %(levelname)s %(message)s",
     )
     socket_path = os.environ.get("GRAPHAGENTS_SOCKET", DEFAULT_SOCKET_PATH)
-    ws_port = int(os.environ.get("GRAPHAGENTS_WS_PORT", DEFAULT_WS_PORT))
     http_port = int(os.environ.get("GRAPHAGENTS_HTTP_PORT", DEFAULT_HTTP_PORT))
     project_root = os.environ.get("GRAPHAGENTS_PROJECT_ROOT", os.getcwd())
 
+    if "GRAPHAGENTS_WS_PORT" in os.environ:
+        LOGGER.warning(
+            "GRAPHAGENTS_WS_PORT is obsolete and ignored: the WebSocket now "
+            "shares the HTTP port (GRAPHAGENTS_HTTP_PORT=%d).",
+            http_port,
+        )
+
     with contextlib.suppress(KeyboardInterrupt):
-        asyncio.run(run(socket_path, ws_port, http_port, project_root))
+        asyncio.run(run(socket_path, http_port, project_root))
 
 
 if __name__ == "__main__":

@@ -120,8 +120,10 @@ Web MVP implemented and verified end-to-end (TDD, all via the specialist agents)
 
 - **Backend** (`graphagents/normalize.py`, `hooks/emit_event.py`, `daemon/server.py`): 36/36
   pytest green. Hook is stdlib-only and exits 0 on garbage input. Daemon ingests hook events
-  on a Unix socket, broadcasts them over WebSocket (`:8765`), and serves `web/dist` over HTTP
-  (`:8080`). A/M logic lives in the daemon via a `known_paths` set.
+  on a Unix socket, then serves `web/dist` over HTTP **and** broadcasts events over WebSocket
+  (`/ws`) on a single port (`:8080`) — one forwarded port is enough for remote/SSH use, and
+  the browser derives the socket URL from its own origin. A/M logic lives in the daemon via a
+  `known_paths` set.
 - **Frontend** (`web/`): 23/23 vitest green, `tsc` + `vite build` clean. Gource-style WebGL
   renderer (three.js force layout + `UnrealBloomPass` + per-actor beams), pure `simulation.ts`
   model, typed `parseEvent`, auto-reconnecting `wsClient.ts`.

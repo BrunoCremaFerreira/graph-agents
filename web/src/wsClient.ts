@@ -15,12 +15,29 @@ export interface WsClientOptions {
   readonly maxDelayMs?: number;
 }
 
-const DEFAULT_URL = "ws://localhost:8765";
+/** Used only outside a browser (tests, SSR); real pages derive from location. */
+const FALLBACK_URL = "ws://localhost:8080/ws";
 
-/** Resolve the daemon URL from Vite env, falling back to the local default. */
+/**
+ * Resolve the daemon URL, preferring the page's own origin.
+ *
+ * The daemon answers HTTP and the WebSocket on one port, so deriving the URL
+ * from `window.location` means whatever host/port reached the page also reaches
+ * the socket. That is what makes a tunnelled setup (SSH or VS Code port
+ * forwarding) work with a single forwarded port -- a hard-coded `localhost`
+ * would resolve to the *viewer's* machine and silently never connect.
+ * `VITE_WS_URL` still overrides, for a Vite dev server on a different port.
+ */
 export function resolveWsUrl(): string {
   const fromEnv = import.meta.env?.VITE_WS_URL;
-  return typeof fromEnv === "string" && fromEnv.length > 0 ? fromEnv : DEFAULT_URL;
+  if (typeof fromEnv === "string" && fromEnv.length > 0) return fromEnv;
+
+  const location = typeof window !== "undefined" ? window.location : undefined;
+  if (location?.host) {
+    const scheme = location.protocol === "https:" ? "wss:" : "ws:";
+    return `${scheme}//${location.host}/ws`;
+  }
+  return FALLBACK_URL;
 }
 
 export class WsClient {

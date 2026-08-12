@@ -146,7 +146,7 @@ Web MVP implemented and verified end-to-end (TDD).
   a Unix socket, watches the filesystem, and serves `web/dist` over HTTP **and** broadcasts
   events over WebSocket (`/ws`) on a single port (`:8080`) — one forwarded port is enough for
   remote/SSH use, and the browser derives the socket URL from its own origin.
-- **Frontend** (`web/`): 87/87 vitest green, `tsc` + `vite build` clean. Gource-style WebGL
+- **Frontend** (`web/`): 107/107 vitest green, `tsc` + `vite build` clean. Gource-style WebGL
   renderer (three.js force layout + `UnrealBloomPass` + per-agent figure and beams), pure
   `simulation.ts` model, typed `parseEvent`, auto-reconnecting `wsClient.ts`. Label placement
   lives in pure `labels.ts` (like `view.ts`) because `renderer.ts` needs a GL context and
@@ -156,6 +156,20 @@ Web MVP implemented and verified end-to-end (TDD).
   at a 48-sprite pool whose slots stay bound to a path so a new event does not repaint every
   canvas. `updateLabels` runs **every frame**: positioning labels only on topology change
   left them stranded while the force layout kept moving the nodes.
+- **Text is not part of the glow.** Labels live in a separate `overlayScene`, drawn after
+  the composer with `autoClear = false`. Every glyph pixel clears the bloom's 0.05
+  threshold, so a label left in the main scene gets an additive halo that closes the
+  counters of its letters. Four more rules keep names sharp, and all four were once broken
+  at the same time: the sprite is scaled by `spriteHeightForEm` so the requested pixel
+  height applies to the **em box**, not to the padded texture canvas (that alone cost a
+  third of the size); textures are rasterised at `labelFontPixels(dpr)` — constant, because
+  a label is always the same CSS height on screen — so sampling is 1:1 and mipmaps are off;
+  positions pass through `snapToPixelGrid` anchored on the camera centre, since a sprite
+  landing between device pixels is smeared by the linear filter; and every label texture is
+  marked `SRGBColorSpace`, or the gamma of each antialiased edge shifts and fattens the
+  outline. Do not resize the bloom pass by hand in `resize()` — the composer already sizes
+  its passes in drawing-buffer pixels, and re-setting them in CSS pixels halves them on
+  HiDPI screens.
 - **Integration** (verified against a live daemon): tree seeded on connect; a Write flashes
   once across both channels; `cp *.md docs/` reports each file actually copied, credited to
   the agent; `rm -rf docs/` prunes the subtree; a non-agent edit appears with no actor.
@@ -172,4 +186,6 @@ nothing. Debug an empty screen with `GRAPHAGENTS_DEBUG_LOG` on the hook command.
 
 Not yet built: per-subagent attribution (currently one actor per session), custom avatar
 *images* per agent, `.gitignore` parsing, recorded-session replay/export. Attribution is
-time-based, so simultaneous agents can be credited to one of them.
+time-based, so simultaneous agents can be credited to one of them. Label textures are
+rasterised once at the pixel ratio the renderer had at construction, so dragging the window
+to a monitor of a different DPI leaves the names slightly soft until a reload.

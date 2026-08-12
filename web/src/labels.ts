@@ -94,11 +94,67 @@ export function labelWorldHeight(
 /**
  * Vertical gap between a node and its label, in world units.
  *
- * Proportional to the text rather than constant: a fixed offset is what let
- * directory names drift visibly away from their nodes at low zoom.
+ * Takes the height of the text's EM BOX, not of the sprite around it -- the
+ * sprite is taller (it carries the texture's padding), and a sprite is centred
+ * on its position, so the gap has to clear half of that. Proportional to the
+ * text rather than constant: a fixed offset is what let directory names drift
+ * visibly away from their nodes at low zoom.
  */
-export function labelOffset(worldHeight: number): number {
-  return worldHeight * 0.9;
+export function labelOffset(emWorldHeight: number): number {
+  return emWorldHeight * 0.9;
+}
+
+/**
+ * World height to scale a label sprite to, so its text lands at
+ * `emWorldHeight`.
+ *
+ * A label texture is taller than its em box: it carries padding above and
+ * below. Scaling the whole sprite to the height the text should have shrinks
+ * the text by exactly that padding -- with the renderer's 48px font in a 72px
+ * canvas the glyphs came out at two thirds of the requested size, which is what
+ * made every name look small and soft.
+ */
+export function spriteHeightForEm(emWorldHeight: number, emFraction: number): number {
+  // A texture that failed to measure must not scale a sprite to Infinity: one
+  // bad canvas would cover the screen with a single giant quad.
+  const fraction = Number.isFinite(emFraction) && emFraction > 0 ? emFraction : 1;
+  return emWorldHeight / fraction;
+}
+
+/** Smallest raster size that keeps glyph stems from breaking up. */
+const MIN_FONT_PIXELS = 12;
+
+/** Largest raster size worth storing; beyond it the texture is never sampled. */
+const MAX_FONT_PIXELS = 64;
+
+/**
+ * Font size, in device pixels, to rasterise a label texture at.
+ *
+ * Deliberately independent of the zoom: the sprite is rescaled every frame to a
+ * fixed on-screen pixel height, so the only thing that changes how many real
+ * pixels the text covers is the device pixel ratio. Making this depend on the
+ * camera would rebuild every texture on every wheel tick.
+ */
+export function labelFontPixels(devicePixelRatio: number, pixels = LABEL_PIXEL_HEIGHT): number {
+  const dpr = Number.isFinite(devicePixelRatio) && devicePixelRatio > 0 ? devicePixelRatio : 1;
+  const raw = Math.round(pixels * dpr);
+  return Math.min(MAX_FONT_PIXELS, Math.max(MIN_FONT_PIXELS, raw));
+}
+
+/**
+ * Snap a world coordinate to whole device pixels, measured from `origin`.
+ *
+ * Text sampled with a linear filter is only crisp when texel and pixel centres
+ * line up; a sprite landing on a fractional device pixel smears every glyph.
+ * The grid is anchored on the camera centre rather than on the world origin so
+ * panning shifts the whole grid with the view instead of re-blurring the labels
+ * at every intermediate position.
+ */
+export function snapToPixelGrid(value: number, origin: number, worldPerPixel: number): number {
+  // First layout pass: a zero-height viewport makes worldPerPixel 0, and
+  // dividing by it would put every label at NaN and blank the graph.
+  if (!Number.isFinite(worldPerPixel) || worldPerPixel <= 0) return value;
+  return origin + Math.round((value - origin) / worldPerPixel) * worldPerPixel;
 }
 
 /**

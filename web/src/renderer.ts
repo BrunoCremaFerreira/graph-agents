@@ -16,6 +16,7 @@ import {
   BufferGeometry,
   CanvasTexture,
   Color,
+  LinearFilter,
   LineBasicMaterial,
   LineSegments,
   OrthographicCamera,
@@ -24,6 +25,7 @@ import {
   ShaderMaterial,
   Sprite,
   SpriteMaterial,
+  SRGBColorSpace,
   Vector2,
   WebGLRenderer,
 } from "three";
@@ -52,9 +54,12 @@ import {
 } from "./view";
 import {
   fileLabelOpacity,
+  labelFontPixels,
   labelOffset,
   labelWorldHeight,
   selectFileLabels,
+  snapToPixelGrid,
+  spriteHeightForEm,
   MAX_FILE_LABELS,
   type LabelCandidate,
 } from "./labels";
@@ -125,9 +130,16 @@ const POINT_FRAGMENT = /* glsl */ `
 export class GourceRenderer {
   private readonly renderer: WebGLRenderer;
   private readonly scene = new Scene();
+  /**
+   * Text, drawn after the composer and outside the bloom.
+   *
+   * Every glyph pixel is above the bloom's threshold, so a label left in the
+   * main scene gets an additive halo that closes the counters of its letters --
+   * exactly the shapes that make it legible. The tree glows; its captions do not.
+   */
+  private readonly overlayScene = new Scene();
   private readonly camera: OrthographicCamera;
   private readonly composer: EffectComposer;
-  private readonly bloom: UnrealBloomPass;
   private readonly layout = new ForceLayout();
 
   private readonly nodePoints: Points;
@@ -164,6 +176,17 @@ export class GourceRenderer {
   private lastTime = 0;
   private running = false;
   private readonly scratchColor = new Color();
+
+  /**
+   * Font size labels are rasterised at, in device pixels, and the anisotropy
+   * they are sampled with. Both are fixed for the life of the context: a label
+   * is always {@link LABEL_PIXEL_HEIGHT} CSS pixels tall on screen, so the only
+   * thing deciding how many real pixels that is, is the device pixel ratio.
+   */
+  private readonly labelFont: number;
+  private readonly labelAnisotropy: number;
+  /** Per-frame label metrics, reused in place so the hot path allocates nothing. */
+  private readonly labelMetrics = { em: 0, offset: 0, worldPerPixel: 0 };
 
   constructor(private readonly canvas: HTMLCanvasElement, private readonly sim: Simulation) {
     this.renderer = new WebGLRenderer({ canvas, antialias: true, powerPreference: "high-performance" });
@@ -206,9 +229,15 @@ export class GourceRenderer {
 
     this.composer = new EffectComposer(this.renderer);
     this.composer.addPass(new RenderPass(this.scene, this.camera));
-    this.bloom = new UnrealBloomPass(new Vector2(canvas.clientWidth, canvas.clientHeight), 1.1, 0.6, 0.05);
-    this.composer.addPass(this.bloom);
+    this.composer.addPass(
+      new UnrealBloomPass(new Vector2(canvas.clientWidth, canvas.clientHeight), 1.1, 0.6, 0.05),
+    );
     this.composer.addPass(new OutputPass());
+
+    // The renderer clamps the pixel ratio, so this -- not window.devicePixelRatio
+    // -- is how many real pixels a CSS pixel of label actually covers.
+    this.labelFont = labelFontPixels(this.renderer.getPixelRatio());
+    this.labelAnisotropy = this.renderer.capabilities.getMaxAnisotropy();
 
     for (let i = 0; i < MAX_FILE_LABELS; i += 1) {
       const sprite = new Sprite(
@@ -216,7 +245,8 @@ export class GourceRenderer {
       );
       sprite.visible = false;
       sprite.userData.aspect = 1;
-      this.scene.add(sprite);
+      sprite.userData.emFraction = 1;
+      this.overlayScene.add(sprite);
       this.fileLabels.push({ sprite, path: "" });
     }
 
@@ -346,8 +376,10 @@ export class GourceRenderer {
     const w = this.canvas.clientWidth || window.innerWidth;
     const h = this.canvas.clientHeight || window.innerHeight;
     this.renderer.setSize(w, h, false);
+    // The composer resizes its passes itself, in the renderer's own drawing
+    // buffer size; resizing the bloom again with CSS pixels halved its targets
+    // on a HiDPI screen, which softened everything it touched.
     this.composer.setSize(w, h);
-    this.bloom.setSize(w, h);
     this.applyCameraFrustum(w / Math.max(1, h));
   }
 
@@ -378,6 +410,11 @@ export class GourceRenderer {
     this.updateLabels(model);
 
     this.composer.render();
+    // Text goes on top of the finished image, never through the bloom: keeping
+    // the composer's output means not clearing the buffer first.
+    this.renderer.autoClear = false;
+    this.renderer.render(this.overlayScene, this.camera);
+    this.renderer.autoClear = true;
   }
 
   private topologyChanged(model: readonly SimNode[]): boolean {
@@ -581,14 +618,15 @@ export class GourceRenderer {
     if (existing) return existing;
     const color = hashColor(`actor:${agent}`);
 
+    // The figure stays in the main scene: it is part of what should glow.
     const figure = makeAvatar(color);
     figure.visible = false;
     this.scene.add(figure);
 
     // Session ids are long; the tail is what distinguishes two agents.
-    const label = makeLabel(shortAgentName(agent), color);
+    const label = this.makeLabel(shortAgentName(agent), color);
     label.visible = false;
-    this.scene.add(label);
+    this.overlayScene.add(label);
 
     const view: ActorView = { agent, color, x: 0, y: 0, hasPos: false, figure, label };
     this.actors.set(agent, view);
@@ -605,8 +643,8 @@ export class GourceRenderer {
   private ensureDirLabel(path: string): void {
     if (this.dirLabels.has(path)) return;
     const name = path.slice(path.lastIndexOf("/") + 1);
-    const sprite = makeLabel(name, DIR_COLOR);
-    this.scene.add(sprite);
+    const sprite = this.makeLabel(name, DIR_COLOR);
+    this.overlayScene.add(sprite);
     this.dirLabels.set(path, sprite);
   }
 
@@ -614,7 +652,7 @@ export class GourceRenderer {
   private pruneDirLabels(): void {
     for (const [path, sprite] of this.dirLabels) {
       if (this.nodeIndex.has(path)) continue;
-      this.scene.remove(sprite);
+      this.overlayScene.remove(sprite);
       (sprite.material as SpriteMaterial).map?.dispose();
       (sprite.material as SpriteMaterial).dispose();
       this.dirLabels.delete(path);
@@ -628,8 +666,16 @@ export class GourceRenderer {
    */
   private updateLabels(model: readonly SimNode[]): void {
     const viewportHeight = this.canvas.clientHeight || window.innerHeight;
-    const worldHeight = labelWorldHeight(this.view.halfHeight, viewportHeight);
-    const offset = labelOffset(worldHeight);
+    const metrics = this.labelMetrics;
+    // The height the TEXT must occupy; the sprite around it is taller by the
+    // texture's padding, which `sizeLabel` adds back.
+    metrics.em = labelWorldHeight(this.view.halfHeight, viewportHeight);
+    metrics.offset = labelOffset(metrics.em);
+    // World size of one device pixel. Landing a label between two of them is
+    // what makes the linear filter smear glyphs even at a 1:1 texture size.
+    metrics.worldPerPixel =
+      (2 * this.view.halfHeight) /
+      Math.max(1, viewportHeight * this.renderer.getPixelRatio());
 
     for (const [path, sprite] of this.dirLabels) {
       const p = this.layout.position(path);
@@ -638,21 +684,35 @@ export class GourceRenderer {
         continue;
       }
       sprite.visible = true;
-      sprite.position.set(p.x, p.y + offset, 1);
-      sizeLabel(sprite, worldHeight);
+      this.placeLabel(sprite, p.x, p.y + metrics.offset, 1);
     }
 
     for (const actor of this.actors.values()) {
       if (!actor.label.visible) continue;
-      actor.label.position.set(actor.x, actor.y + AVATAR_WORLD_HEIGHT + offset, 2);
-      sizeLabel(actor.label, worldHeight);
+      this.placeLabel(actor.label, actor.x, actor.y + AVATAR_WORLD_HEIGHT + metrics.offset, 2);
     }
 
-    this.updateFileLabels(model, worldHeight, offset);
+    this.updateFileLabels(model);
+  }
+
+  /**
+   * Put one label on the pixel grid at the size the current zoom asks for.
+   *
+   * The grid is anchored on the camera centre, so panning slides it with the
+   * view instead of re-blurring every name at each intermediate position.
+   */
+  private placeLabel(sprite: Sprite, x: number, y: number, z: number): void {
+    const { em, worldPerPixel } = this.labelMetrics;
+    sprite.position.set(
+      snapToPixelGrid(x, this.view.centerX, worldPerPixel),
+      snapToPixelGrid(y, this.view.centerY, worldPerPixel),
+      z,
+    );
+    sizeLabel(sprite, em);
   }
 
   /** Hand the sprite pool to the files that earned a name this frame. */
-  private updateFileLabels(model: readonly SimNode[], worldHeight: number, offset: number): void {
+  private updateFileLabels(model: readonly SimNode[]): void {
     const candidates = this.labelCandidates;
     let count = 0;
     for (const node of model) {
@@ -699,7 +759,7 @@ export class GourceRenderer {
         continue;
       }
       pending.delete(slot.path);
-      this.drawFileLabel(slot, held, worldHeight, offset);
+      this.drawFileLabel(slot, held);
     }
 
     const incoming = pending.values();
@@ -708,20 +768,14 @@ export class GourceRenderer {
       const next = incoming.next();
       if (next.done) break;
       this.retextureFileLabel(slot, next.value.path);
-      this.drawFileLabel(slot, next.value, worldHeight, offset);
+      this.drawFileLabel(slot, next.value);
     }
   }
 
   /** Position, size and fade one assigned file label. */
-  private drawFileLabel(
-    slot: FileLabelSlot,
-    pick: LabelCandidate,
-    worldHeight: number,
-    offset: number,
-  ): void {
+  private drawFileLabel(slot: FileLabelSlot, pick: LabelCandidate): void {
     slot.sprite.visible = true;
-    slot.sprite.position.set(pick.x, pick.y + offset, 1);
-    sizeLabel(slot.sprite, worldHeight);
+    this.placeLabel(slot.sprite, pick.x, pick.y + this.labelMetrics.offset, 1);
     (slot.sprite.material as SpriteMaterial).opacity = fileLabelOpacity(
       pick.highlight,
       this.view.halfHeight,
@@ -733,18 +787,94 @@ export class GourceRenderer {
     const material = slot.sprite.material as SpriteMaterial;
     material.map?.dispose();
     const name = path.slice(path.lastIndexOf("/") + 1);
-    const { texture, aspect } = makeLabelTexture(name, fileColor(path));
+    const { texture, aspect, emFraction } = this.makeLabelTexture(name, fileColor(path));
     material.map = texture;
     material.needsUpdate = true;
     slot.sprite.userData.aspect = aspect;
+    slot.sprite.userData.emFraction = emFraction;
     slot.path = path;
+  }
+
+  /**
+   * Render `text` to a texture, with the aspect ratio the sprite must keep and
+   * the share of that texture its em box occupies.
+   *
+   * Split out from {@link makeLabel} so the file-label pool can repaint a
+   * sprite it already owns instead of building a new one every time the
+   * selection moves.
+   */
+  private makeLabelTexture(
+    text: string,
+    color: number,
+  ): { texture: CanvasTexture; aspect: number; emFraction: number } {
+    const canvas = document.createElement("canvas");
+    const ctx = canvas.getContext("2d")!;
+    const font = this.labelFont;
+    ctx.font = `${font}px system-ui, sans-serif`;
+    const metrics = ctx.measureText(text);
+    // A quarter of the em box on each side: room for descenders and for the
+    // antialiased edge, without spending most of the texture on emptiness.
+    const pad = Math.max(2, Math.round(font * 0.25));
+    canvas.width = Math.ceil(metrics.width) + pad * 2;
+    canvas.height = font + pad * 2;
+    // Resizing the canvas resets the context, so the font has to be set again.
+    ctx.font = `${font}px system-ui, sans-serif`;
+    ctx.textBaseline = "middle";
+    ctx.fillStyle = `#${color.toString(16).padStart(6, "0")}`;
+    ctx.fillText(text, pad, canvas.height / 2);
+
+    const texture = new CanvasTexture(canvas);
+    // A 2D canvas hands us sRGB texels. Left as NoColorSpace they are treated
+    // as linear on the way out, which shifts the gamma of every antialiased
+    // edge and fattens the outline of each glyph.
+    texture.colorSpace = SRGBColorSpace;
+    // The sprite is rescaled every frame so the text always covers the same
+    // number of device pixels as the raster, so sampling is near 1:1: a mipmap
+    // chain could only ever be a blurrier version of what we want.
+    texture.minFilter = LinearFilter;
+    texture.magFilter = LinearFilter;
+    texture.generateMipmaps = false;
+    texture.anisotropy = this.labelAnisotropy;
+
+    return {
+      texture,
+      aspect: canvas.width / canvas.height,
+      // Measured off the real canvas: the padding above is what separates the
+      // height the caller asked for from the height the sprite needs.
+      emFraction: font / canvas.height,
+    };
+  }
+
+  /**
+   * Build a text label sprite (white-ish text tinted by `color`).
+   *
+   * The sprite is left unscaled: `updateLabels` sizes it every frame from the
+   * current zoom, so that a name stays the same number of pixels tall whether
+   * the camera is framing one file or the whole project.
+   */
+  private makeLabel(text: string, color: number): Sprite {
+    const { texture, aspect, emFraction } = this.makeLabelTexture(text, color);
+    const material = new SpriteMaterial({ map: texture, transparent: true, depthTest: false, opacity: 0.9 });
+    const sprite = new Sprite(material);
+    sprite.userData.aspect = aspect;
+    sprite.userData.emFraction = emFraction;
+    return sprite;
   }
 }
 
-/** Scale a label sprite to `worldHeight`, preserving its text's aspect ratio. */
-function sizeLabel(sprite: Sprite, worldHeight: number): void {
+/**
+ * Scale a label sprite so its TEXT is `emWorldHeight` tall.
+ *
+ * Scaling the sprite itself to that height is the old bug: the texture carries
+ * padding, so the glyphs came out at two thirds of the requested size.
+ */
+function sizeLabel(sprite: Sprite, emWorldHeight: number): void {
   const aspect = (sprite.userData.aspect as number | undefined) ?? 1;
-  sprite.scale.set(aspect * worldHeight, worldHeight, 1);
+  const emFraction = (sprite.userData.emFraction as number | undefined) ?? 1;
+  const height = spriteHeightForEm(emWorldHeight, emFraction);
+  // `aspect` measures the whole canvas, padding included, so it goes with the
+  // sprite's height and not with the em box's.
+  sprite.scale.set(aspect * height, height, 1);
 }
 
 /** Shared scratch color to avoid per-frame allocation in the lerp path. */
@@ -774,45 +904,6 @@ function makeAvatar(color: number): Sprite {
 function shortAgentName(agent: string): string {
   const tail = agent.slice(agent.lastIndexOf("-") + 1);
   return tail.length > 8 ? tail.slice(0, 8) : tail || agent;
-}
-
-/**
- * Render `text` to a texture, with the aspect ratio the sprite must keep.
- *
- * Split out from {@link makeLabel} so the file-label pool can repaint a sprite
- * it already owns instead of building a new one every time the selection moves.
- */
-function makeLabelTexture(text: string, color: number): { texture: CanvasTexture; aspect: number } {
-  const canvas = document.createElement("canvas");
-  const ctx = canvas.getContext("2d")!;
-  const font = 48;
-  ctx.font = `${font}px system-ui, sans-serif`;
-  const metrics = ctx.measureText(text);
-  const pad = 12;
-  canvas.width = Math.ceil(metrics.width) + pad * 2;
-  canvas.height = font + pad * 2;
-  // Resizing the canvas resets the context, so the font has to be set again.
-  ctx.font = `${font}px system-ui, sans-serif`;
-  ctx.textBaseline = "middle";
-  ctx.fillStyle = `#${color.toString(16).padStart(6, "0")}`;
-  ctx.fillText(text, pad, canvas.height / 2);
-
-  return { texture: new CanvasTexture(canvas), aspect: canvas.width / canvas.height };
-}
-
-/**
- * Build a text label sprite (white-ish text tinted by `color`).
- *
- * The sprite is left unscaled: `updateLabels` sizes it every frame from the
- * current zoom, so that a name stays the same number of pixels tall whether the
- * camera is framing one file or the whole project.
- */
-function makeLabel(text: string, color: number): Sprite {
-  const { texture, aspect } = makeLabelTexture(text, color);
-  const material = new SpriteMaterial({ map: texture, transparent: true, depthTest: false, opacity: 0.9 });
-  const sprite = new Sprite(material);
-  sprite.userData.aspect = aspect;
-  return sprite;
 }
 
 /** Factory that keeps construction details out of `main.ts`. */

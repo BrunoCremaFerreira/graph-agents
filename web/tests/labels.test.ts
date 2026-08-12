@@ -12,6 +12,17 @@
  * in PIXELS, not in world units: the camera spans halfHeight 2..4000, so a
  * world-sized label is either sub-pixel or screen-filling. Expected to FAIL
  * until src/labels.ts exists.
+ *
+ * A third defect motivates the sharpness group below: names render blurry and
+ * too small. `labelWorldHeight` returns the height the TEXT should occupy, but
+ * the renderer scales the whole sprite to it, and the label texture is
+ * font(48) + pad(12)*2 = 72px tall for a 48px em box -- so the text lands at
+ * 67% of 13px, about 8.7px. On top of that the texture is rasterised at a fixed
+ * 48px regardless of device pixel ratio and the sprites land on fractional
+ * device pixels, so the linear filter smears every glyph. The three fixes --
+ * sizing the sprite from the em box, choosing the raster size from the DPR, and
+ * snapping positions to the pixel grid -- are arithmetic, not GL, so they
+ * belong here where they can be tested without a canvas.
  */
 
 import { describe, it, expect } from "vitest";
@@ -20,6 +31,9 @@ import {
   labelOffset,
   fileLabelOpacity,
   selectFileLabels,
+  spriteHeightForEm,
+  labelFontPixels,
+  snapToPixelGrid,
   FILE_LABEL_ZOOM_THRESHOLD,
   LABEL_PIXEL_HEIGHT,
   MAX_FILE_LABELS,
@@ -27,6 +41,12 @@ import {
 } from "../src/labels";
 
 const VIEWPORT_H = 1000;
+
+/**
+ * Fraction of the label texture's height taken by the em box, as the renderer
+ * builds it today: a 48px font inside a 48 + 12*2 = 72px canvas.
+ */
+const EM_FRACTION = 48 / 72;
 
 /** On-screen height, in pixels, of something `worldHeight` tall. */
 function pixelsOnScreen(worldHeight: number, halfHeight: number): number {
@@ -73,6 +93,136 @@ describe("labelOffset", () => {
 
   it("clears the node instead of sitting on top of it", () => {
     expect(labelOffset(10)).toBeGreaterThan(0);
+  });
+
+  it("lifts the label clear of its own sprite, now that it is fed the em height", () => {
+    // The argument becomes the em-box height, not the full texture height, so
+    // the sprite around it is taller than what is passed in. A sprite is
+    // centred on its position, so anything less than half its height leaves the
+    // name overlapping the node it is supposed to caption.
+    const em = LABEL_PIXEL_HEIGHT;
+
+    expect(labelOffset(em)).toBeGreaterThanOrEqual(spriteHeightForEm(em, EM_FRACTION) / 2);
+  });
+});
+
+describe("spriteHeightForEm", () => {
+  it("makes the text render at the requested height, not at the texture's", () => {
+    // The bug: scaling the sprite to 13 world units puts the em box at
+    // 13 * 48/72 = 8.7 -- two thirds of the size the caller asked for.
+    const sprite = spriteHeightForEm(13, EM_FRACTION);
+
+    expect(sprite * EM_FRACTION).toBeCloseTo(13);
+  });
+
+  it("scales in proportion to the height the text must occupy", () => {
+    expect(spriteHeightForEm(20, EM_FRACTION)).toBeCloseTo(2 * spriteHeightForEm(10, EM_FRACTION));
+  });
+
+  it("leaves the height alone when the em box fills the whole texture", () => {
+    expect(spriteHeightForEm(13, 1)).toBeCloseTo(13);
+  });
+
+  it("grows the sprite as the texture's padding takes more of it", () => {
+    expect(spriteHeightForEm(13, 0.5)).toBeGreaterThan(spriteHeightForEm(13, 0.9));
+  });
+
+  it("keeps the em box at the requested size at any zoom", () => {
+    const em = labelWorldHeight(4000, VIEWPORT_H, LABEL_PIXEL_HEIGHT);
+    const sprite = spriteHeightForEm(em, EM_FRACTION);
+
+    expect(pixelsOnScreen(sprite * EM_FRACTION, 4000)).toBeCloseTo(LABEL_PIXEL_HEIGHT);
+  });
+
+  it("falls back to a finite height when the em fraction is degenerate", () => {
+    // A texture that failed to measure must not scale a sprite to Infinity:
+    // one bad canvas would blank the screen with a single giant quad.
+    for (const bad of [0, -0.5, NaN]) {
+      const height = spriteHeightForEm(13, bad);
+
+      expect(Number.isFinite(height)).toBe(true);
+      expect(height).toBeGreaterThan(0);
+    }
+  });
+});
+
+describe("labelFontPixels", () => {
+  it("rasterises at the physical pixel size the screen will show", () => {
+    expect(labelFontPixels(2, 20)).toBe(40);
+  });
+
+  it("returns a whole number of pixels for the font string", () => {
+    expect(Number.isInteger(labelFontPixels(1.5, 13))).toBe(true);
+  });
+
+  it("asks a retina screen for twice the texture of a plain one", () => {
+    expect(labelFontPixels(2, 20)).toBe(2 * labelFontPixels(1, 20));
+  });
+
+  it("ignores the zoom, because the sprite is rescaled to a fixed pixel height", () => {
+    // A zoom-dependent raster size would rebuild every texture on every wheel
+    // tick. The label is always LABEL_PIXEL_HEIGHT px on screen, so the only
+    // thing that changes how many real pixels that is, is the device ratio.
+    expect(labelFontPixels.length).toBeLessThanOrEqual(2);
+  });
+
+  it("never rasterises so small that the glyphs fall apart", () => {
+    expect(labelFontPixels(1, 3)).toBeGreaterThanOrEqual(12);
+  });
+
+  it("never wastes texture beyond what the screen can resolve", () => {
+    expect(labelFontPixels(4, 200)).toBeLessThanOrEqual(64);
+  });
+
+  it("treats a missing or nonsensical device pixel ratio as 1", () => {
+    for (const bad of [0, NaN, -2]) {
+      expect(labelFontPixels(bad, 20)).toBe(labelFontPixels(1, 20));
+    }
+  });
+
+  it("defaults to the on-screen label height when no pixel size is given", () => {
+    expect(labelFontPixels(1)).toBe(labelFontPixels(1, LABEL_PIXEL_HEIGHT));
+  });
+});
+
+describe("snapToPixelGrid", () => {
+  const WORLD_PER_PIXEL = 0.37;
+  const ORIGIN = -12.5;
+
+  it("leaves a coordinate sitting on the camera centre where it is", () => {
+    expect(snapToPixelGrid(ORIGIN, ORIGIN, WORLD_PER_PIXEL)).toBe(ORIGIN);
+  });
+
+  it("lands on a whole number of pixels away from the camera centre", () => {
+    // The grid follows the camera: anchoring it at the world origin would make
+    // every label re-blur the moment the user pans.
+    for (const value of [-40.3, -12.4, 0, 7.77, 133.1]) {
+      const steps = (snapToPixelGrid(value, ORIGIN, WORLD_PER_PIXEL) - ORIGIN) / WORLD_PER_PIXEL;
+
+      expect(Math.abs(steps - Math.round(steps))).toBeLessThan(1e-9);
+    }
+  });
+
+  it("never moves a label by more than half a pixel", () => {
+    for (const value of [-40.3, -12.4, 0, 7.77, 133.1]) {
+      const moved = Math.abs(snapToPixelGrid(value, ORIGIN, WORLD_PER_PIXEL) - value);
+
+      expect(moved).toBeLessThanOrEqual(WORLD_PER_PIXEL / 2 + 1e-9);
+    }
+  });
+
+  it("is idempotent, so a snapped label does not creep frame after frame", () => {
+    const once = snapToPixelGrid(7.77, ORIGIN, WORLD_PER_PIXEL);
+
+    expect(snapToPixelGrid(once, ORIGIN, WORLD_PER_PIXEL)).toBeCloseTo(once, 10);
+  });
+
+  it("passes the value through when the pixel size is unusable", () => {
+    // First layout pass: a zero-height viewport makes worldPerPixel 0. Dividing
+    // by it would put every label at NaN and blank the graph.
+    for (const bad of [0, -1, NaN]) {
+      expect(snapToPixelGrid(7.77, ORIGIN, bad)).toBe(7.77);
+    }
   });
 });
 

@@ -31,6 +31,13 @@ _COLOR_BY_TYPE = {
     _OP_DELETED: "FF3333",
 }
 
+# Where an event came from. The frontend reads this to decide how loudly to draw
+# it: a seeded file is part of the tree's backdrop and must not flash or spawn an
+# actor, while a hook or watcher event is live activity.
+ORIGIN_HOOK = "hook"
+ORIGIN_SEED = "seed"
+ORIGIN_WATCH = "watch"
+
 # Bash commands whose first non-flag argument is the affected path, mapped to
 # the operation they represent.
 _DELETE_COMMANDS = {"rm", "rmdir"}
@@ -49,6 +56,9 @@ class Event:
         path: Path relative to the observed project root.
         color: Hex color WITHOUT a leading ``#`` (A->33FF33, M->FFAA00,
             D->FF3333).
+        origin: What produced the event -- ``"hook"`` (a Claude tool call),
+            ``"seed"`` (the tree snapshot taken at boot) or ``"watch"`` (the
+            filesystem watcher).
     """
 
     ts: float
@@ -56,6 +66,7 @@ class Event:
     type: str
     path: str
     color: str
+    origin: str = ORIGIN_HOOK
 
 
 def normalize_event(
@@ -104,6 +115,47 @@ def _normalize(
     )
 
 
+def seed_event(path: str, ts: float | None = None) -> Event:
+    """Build the event that puts an already-existing file on screen.
+
+    Seeded files belong to no agent (``agent=""``): they were there before the
+    session started, so attributing them to whoever connects first would draw a
+    beam for work nobody did.
+    """
+    return Event(
+        ts=ts if ts is not None else time.time(),
+        agent="",
+        type=_OP_ADDED,
+        path=path,
+        color=_COLOR_BY_TYPE[_OP_ADDED],
+        origin=ORIGIN_SEED,
+    )
+
+
+def fs_event(
+    path: str,
+    op_type: str,
+    agent: str = "",
+    ts: float | None = None,
+) -> Event | None:
+    """Build an event for a change the watcher observed, or ``None`` if invalid.
+
+    `agent` is filled in by the daemon from the hook that fired around the same
+    time; an empty string means the change could not be attributed (a manual
+    edit, a build step) and the frontend draws it without an actor.
+    """
+    if op_type not in _COLOR_BY_TYPE or not path:
+        return None
+    return Event(
+        ts=ts if ts is not None else time.time(),
+        agent=agent,
+        type=op_type,
+        path=path,
+        color=_COLOR_BY_TYPE[op_type],
+        origin=ORIGIN_WATCH,
+    )
+
+
 def _resolve_operation(
     tool_name: str,
     tool_input: dict,
@@ -147,35 +199,71 @@ def _parse_bash(
 ) -> tuple[str, str] | None:
     """Parse a shell command into a single filesystem operation.
 
-    Only the primary, unambiguous change to the tree is reported:
+    Only the primary, *unambiguous* change to the tree is reported:
       * ``rm`` / ``rmdir``     -> ``D`` of the first target
       * ``mkdir`` / ``touch``  -> ``A`` of the first target
       * ``cp``                 -> ``A`` of the destination (last argument)
       * ``mv``                 -> ``D`` of the origin (first argument)
+
+    Anything the command does not pin to one concrete path yields ``None``: a
+    glob (``cp *.md docs/``) names files this function cannot enumerate, and a
+    directory destination is not a file at all. Guessing there used to put a
+    phantom node on screen that never went away. The filesystem watcher reports
+    what those commands actually did, so silence here costs nothing.
     """
     command = tool_input.get("command")
     if not isinstance(command, str) or not command.strip():
         return None
 
-    tokens = shlex.split(command)
+    try:
+        tokens = shlex.split(command)
+    except ValueError:
+        # Unbalanced quotes: an unparseable command, not a filesystem change.
+        return None
     if not tokens:
         return None
 
     program = tokens[0]
     operands = [tok for tok in tokens[1:] if not tok.startswith("-")]
-    if not operands:
+    if not operands or any(_has_glob(operand) for operand in operands):
         return None
 
     if program in _DELETE_COMMANDS:
-        return _OP_DELETED, _make_relative(operands[0], project_root)
+        return _OP_DELETED, _clean(operands[0], project_root)
     if program in _ADD_COMMANDS:
-        return _OP_ADDED, _make_relative(operands[0], project_root)
+        return _OP_ADDED, _clean(operands[0], project_root)
     if program == "cp":
-        return _OP_ADDED, _make_relative(operands[-1], project_root)
+        if len(operands) != 2 or _is_directory_target(operands[-1]):
+            return None
+        return _OP_ADDED, _clean(operands[-1], project_root)
     if program == "mv":
-        return _OP_DELETED, _make_relative(operands[0], project_root)
+        if len(operands) != 2 or _is_directory_target(operands[-1]):
+            # `mv a.md docs/` keeps the file under a new name we cannot build
+            # here; the watcher reports both ends of the move instead.
+            return None
+        return _OP_DELETED, _clean(operands[0], project_root)
 
     return None
+
+
+def _has_glob(operand: str) -> bool:
+    """Whether the shell would expand this operand into an unknown set."""
+    return any(char in operand for char in "*?[")
+
+
+def _is_directory_target(operand: str) -> bool:
+    """A trailing slash is the one unambiguous 'this is a directory' marker."""
+    return operand.endswith("/")
+
+
+def _clean(path: str, project_root: str | None) -> str:
+    """Relativize `path` and drop a trailing slash.
+
+    ``rm -rf build/`` and ``rm -rf build`` must name the same node, or the graph
+    grows two entries for one directory.
+    """
+    relative = _make_relative(path, project_root)
+    return relative.rstrip("/") or relative
 
 
 def _make_relative(path: str, project_root: str | None) -> str:

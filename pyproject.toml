@@ -12,8 +12,8 @@ dependencies = []
 [project.optional-dependencies]
 # The daemon may use third-party deps; the hook (hooks/emit_event.py) MUST stay
 # stdlib-only and is intentionally excluded from any dependency here.
-daemon = ["websockets>=12"]
-dev = ["pytest>=7", "websockets>=12"]
+daemon = ["websockets>=12", "watchdog>=4"]
+dev = ["pytest>=7", "websockets>=12", "watchdog>=4"]
 
 [tool.setuptools]
 packages = ["graphagents", "daemon"]

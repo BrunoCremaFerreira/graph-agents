@@ -8,8 +8,15 @@
     "why there is no PreToolUse hook here: existence is tracked in the daemon, so",
     "the first Write to a path is an add and any later Write is a modify, with no",
     "filesystem probing on the hot path.",
+    "The hook is no longer the only source of events: the daemon also watches the",
+    "filesystem, so changes show up even without it. What the hook adds is WHO -",
+    "the agent id that puts a figure and a beam on the change. Note that Claude",
+    "Code reads settings.json at startup, so a session already open when you add",
+    "this block keeps running without it.",
     "Env vars (optional): GRAPHAGENTS_SOCKET overrides the socket path and must",
-    "match the daemon; default is /tmp/graph-agents.sock."
+    "match the daemon; default is /tmp/graph-agents.sock. GRAPHAGENTS_DEBUG_LOG",
+    "names a file to append hook failures to - the only way to tell 'daemon down'",
+    "from 'nothing happened'. Prefix it on the command below to enable it."
   ],
   "hooks": {
     "PostToolUse": [

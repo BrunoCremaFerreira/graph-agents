@@ -36,8 +36,10 @@ import logging
 import mimetypes
 import os
 import signal
+import time
 import urllib.parse
 from collections import deque
+from collections.abc import Callable, Iterable
 from dataclasses import asdict
 from pathlib import Path
 
@@ -45,13 +47,27 @@ from websockets.asyncio.server import Server, ServerConnection, broadcast, serve
 from websockets.datastructures import Headers
 from websockets.http11 import Request, Response
 
-from graphagents.normalize import Event, normalize_event
+from graphagents.normalize import Event, fs_event, normalize_event, seed_event
+from graphagents.tree import scan_tree
 
 LOGGER = logging.getLogger("graphagents.daemon")
 
 DEFAULT_SOCKET_PATH = "/tmp/graph-agents.sock"
 DEFAULT_HTTP_PORT = 8080
 REPLAY_BUFFER_SIZE = 200
+
+#: How long after a hook fires its agent still owns the changes the watcher
+#: reports. Long enough to cover a slow `cp -r`, short enough that a manual edit
+#: minutes later stays anonymous.
+ATTRIBUTION_WINDOW_SECONDS = 5.0
+
+#: How long a hook-reported path suppresses the watcher's echo of the same
+#: change, so one Write flashes once instead of twice.
+DEDUPE_WINDOW_SECONDS = 2.0
+
+#: How long after reporting a path a bare "modified" is treated as the tail of
+#: that same write. Writing a file emits created+modified milliseconds apart.
+COALESCE_WINDOW_SECONDS = 0.75
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
 WEB_DIST = REPO_ROOT / "web" / "dist"
@@ -60,23 +76,51 @@ WEB_DIST = REPO_ROOT / "web" / "dist"
 class EventHub:
     """Normalizes ingested payloads and fans them out to WebSocket clients.
 
-    Owns the two pieces of shared state that must be consistent across all
-    hooks and clients: the set of paths already seen (drives add-vs-modify) and
-    the replay buffer of recent events.
+    Owns the state that must be consistent across all hooks, the watcher and
+    every client:
+
+      * ``_known_paths`` -- the tree as currently drawn. Drives add-vs-modify and
+        lets a directory deletion prune the files under it.
+      * ``_seed`` / ``_recent`` -- what a connecting client is replayed. The seed
+        snapshot is kept apart from the ring buffer so ordinary traffic can never
+        push the tree itself out of the replay.
+      * ``_last_hook`` -- the agent that acted most recently, which is how a
+        filesystem change gets attributed to whoever caused it (see
+        :meth:`ingest_fs_change`).
     """
 
-    def __init__(self, project_root: str, buffer_size: int = REPLAY_BUFFER_SIZE) -> None:
+    def __init__(
+        self,
+        project_root: str,
+        buffer_size: int = REPLAY_BUFFER_SIZE,
+        attribution_window: float = ATTRIBUTION_WINDOW_SECONDS,
+        dedupe_window: float = DEDUPE_WINDOW_SECONDS,
+        coalesce_window: float = COALESCE_WINDOW_SECONDS,
+        clock: Callable[[], float] = time.monotonic,
+    ) -> None:
         self._project_root = project_root
         self._known_paths: set[str] = set()
+        self._seed: list[str] = []
         self._recent: deque[str] = deque(maxlen=buffer_size)
         self._clients: set[ServerConnection] = set()
+        self._attribution_window = attribution_window
+        self._dedupe_window = dedupe_window
+        self._coalesce_window = coalesce_window
+        self._clock = clock
+        self._last_hook: tuple[str, float] | None = None
+        self._hook_paths: dict[str, float] = {}
+        self._fs_paths: dict[str, float] = {}
 
     # -- WebSocket side ----------------------------------------------------
 
+    def replay_messages(self) -> list[str]:
+        """Everything a client connecting right now must receive, in order."""
+        return [*self._seed, *self._recent]
+
     async def register(self, websocket: ServerConnection) -> None:
-        """Add a client and replay recent events so its graph is not empty."""
+        """Add a client and replay the tree plus recent activity."""
         self._clients.add(websocket)
-        for message in list(self._recent):
+        for message in self.replay_messages():
             with contextlib.suppress(Exception):
                 await websocket.send(message)
 
@@ -85,11 +129,34 @@ class EventHub:
 
     # -- Ingest side -------------------------------------------------------
 
+    def seed_paths(self, paths: Iterable[str]) -> None:
+        """Publish the project's existing files as the graph's starting tree.
+
+        Called once at boot with :func:`graphagents.tree.scan_tree`. Without it
+        the page opens on a blank field and only ever shows the handful of files
+        an agent happens to touch.
+        """
+        for path in paths:
+            if not path or path in self._known_paths:
+                continue
+            event = seed_event(path)
+            self._known_paths.add(path)
+            message = _encode(event)
+            self._seed.append(message)
+            broadcast(self._clients, message)
+
     def ingest_line(self, line: str) -> None:
         """Normalize one raw hook JSON line and broadcast the event, if any."""
         payload = self._safe_load(line)
         if payload is None:
             return
+
+        # Remember the actor even when the payload yields no drawable event: a
+        # `find` or a glob-expanding `cp` still means this agent is the one at
+        # work, and the changes the watcher is about to report are its doing.
+        session_id = payload.get("session_id")
+        if isinstance(session_id, str) and session_id:
+            self._last_hook = (session_id, self._clock())
 
         event = normalize_event(
             payload,
@@ -99,10 +166,60 @@ class EventHub:
         if event is None:
             return
 
+        self._hook_paths[event.path] = self._clock()
+        self._publish(event)
+
+    def ingest_fs_change(self, path: str, op_type: str) -> None:
+        """Broadcast a change the watcher saw on disk, attributed if possible.
+
+        Three filters keep this from being noise: a path a hook just reported is
+        skipped (a Write fires both, and the browser must flash it once); a
+        modification landing right after this file was already reported is the
+        tail of the same write, not a second edit; and a directory deletion is
+        expanded into the files known to live under it, so `rm -rf src/` empties
+        that branch instead of leaving it floating.
+        """
+        if not path or self._recently_hooked(path):
+            return
+        if op_type == "M" and self._just_reported(path):
+            return
+
+        agent = self._active_agent()
+        for target in self._expand(path, op_type):
+            event = fs_event(target, op_type, agent=agent)
+            if event is not None:
+                self._fs_paths[target] = self._clock()
+                self._publish(event)
+
+    # -- internals ---------------------------------------------------------
+
+    def _publish(self, event: Event) -> None:
         self._remember_path(event)
-        message = json.dumps(asdict(event), separators=(",", ":"))
+        message = _encode(event)
         self._recent.append(message)
         broadcast(self._clients, message)
+
+    def _expand(self, path: str, op_type: str) -> list[str]:
+        """A directory deletion also deletes everything known beneath it."""
+        if op_type != "D":
+            return [path]
+        prefix = path.rstrip("/") + "/"
+        children = sorted(p for p in self._known_paths if p.startswith(prefix))
+        return [*children, path]
+
+    def _recently_hooked(self, path: str) -> bool:
+        stamped = self._hook_paths.get(path)
+        return stamped is not None and self._clock() - stamped < self._dedupe_window
+
+    def _just_reported(self, path: str) -> bool:
+        stamped = self._fs_paths.get(path)
+        return stamped is not None and self._clock() - stamped < self._coalesce_window
+
+    def _active_agent(self) -> str:
+        if self._last_hook is None:
+            return ""
+        agent, stamped = self._last_hook
+        return agent if self._clock() - stamped < self._attribution_window else ""
 
     def _remember_path(self, event: Event) -> None:
         # A deleted path may be re-added later; keep the set reflecting the
@@ -113,7 +230,7 @@ class EventHub:
             self._known_paths.add(event.path)
 
     @staticmethod
-    def _safe_load(line: str) -> dict | None:
+    def _safe_load(line: str) -> dict | None:  # noqa: D401 - see class docstring
         stripped = line.strip()
         if not stripped:
             return None
@@ -122,6 +239,10 @@ class EventHub:
         except (ValueError, TypeError):
             return None
         return payload if isinstance(payload, dict) else None
+
+
+def _encode(event: Event) -> str:
+    return json.dumps(asdict(event), separators=(",", ":"))
 
 
 async def _handle_ws_client(hub: EventHub, websocket: ServerConnection) -> None:
@@ -235,6 +356,38 @@ async def start_server(
     )
 
 
+def _start_watcher(hub: EventHub, project_root: str):
+    """Start the filesystem watcher, or return ``None`` if it cannot run.
+
+    The watcher's callbacks arrive on watchdog's own thread, so they are handed
+    back to the event loop with ``call_soon_threadsafe`` -- broadcasting from
+    another thread would corrupt the WebSocket connections.
+
+    Import and startup failures are tolerated: without the watcher the daemon
+    still works from hooks alone, and refusing to boot over an optional
+    dependency would be a worse outcome than a less complete graph.
+    """
+    try:
+        from daemon.watcher import FsWatcher
+    except Exception as exc:
+        LOGGER.warning(
+            "filesystem watcher unavailable (%s); falling back to hooks only. "
+            "Install it with: pip install -e '.[daemon]'",
+            exc,
+        )
+        return None
+
+    loop = asyncio.get_running_loop()
+
+    def on_change(path: str, op_type: str) -> None:
+        loop.call_soon_threadsafe(hub.ingest_fs_change, path, op_type)
+
+    watcher = FsWatcher(project_root, on_change)
+    watcher.start()
+    LOGGER.info("watching %s for filesystem changes", project_root)
+    return watcher
+
+
 async def run(
     socket_path: str,
     http_port: int,
@@ -242,12 +395,18 @@ async def run(
 ) -> None:
     hub = EventHub(project_root=project_root)
 
+    seeded = scan_tree(project_root)
+    hub.seed_paths(seeded)
+    LOGGER.info("seeded %d existing files from %s", len(seeded), project_root)
+
     if os.path.exists(socket_path):
         os.unlink(socket_path)
 
     ingest_server = await asyncio.start_unix_server(
         functools.partial(_handle_ingest_client, hub), path=socket_path
     )
+
+    watcher = _start_watcher(hub, project_root)
 
     static_root: Path | None = WEB_DIST if WEB_DIST.is_dir() else None
     if static_root is None:
@@ -271,9 +430,13 @@ async def run(
                 sig, lambda: stop.done() or stop.set_result(None)
             )
 
-    async with ingest_server, ws_server:
-        with contextlib.suppress(asyncio.CancelledError):
-            await stop
+    try:
+        async with ingest_server, ws_server:
+            with contextlib.suppress(asyncio.CancelledError):
+                await stop
+    finally:
+        if watcher is not None:
+            watcher.stop()
     with contextlib.suppress(FileNotFoundError):
         os.unlink(socket_path)
 

@@ -34,6 +34,7 @@ import { OutputPass } from "three/examples/jsm/postprocessing/OutputPass.js";
 import type { AgentEvent } from "./protocol";
 import type { SimNode, Simulation } from "./simulation";
 import { ForceLayout } from "./layout";
+import { createAvatarCanvas } from "./avatar";
 import { fileColor, hashColor, hexToInt } from "./colors";
 import {
   allocateEdgeAttributes,
@@ -59,19 +60,23 @@ interface Beam {
   life: number;
 }
 
-/** Eased on-screen position + label for an agent. */
+/** Eased on-screen position, figure and label for an agent. */
 interface ActorView {
   agent: string;
   color: number;
   x: number;
   y: number;
   hasPos: boolean;
+  /** The Gource-style figure that walks the tree. */
+  figure: Sprite;
   label: Sprite;
 }
 
 const MAX_BEAMS = 512;
 const BEAM_LIFE_SECONDS = 1.2;
 const DIR_COLOR = 0x9aa0a6;
+/** Height of the agent figure in world units (a file dot is a few px wide). */
+const AVATAR_WORLD_HEIGHT = 7;
 
 /** Per-point shader: per-vertex size (px) + color, soft circular alpha. */
 const POINT_VERTEX = /* glsl */ `
@@ -250,7 +255,22 @@ export class GourceRenderer {
 
   /** Register a discrete event for its visual effect (actor beam + flash). */
   onEvent(event: AgentEvent): void {
+    // Seeded tree entries and unattributed filesystem changes have no actor, so
+    // there is no figure to place and no beam to fire. The model still flashes
+    // the file itself for the watcher case.
+    if (event.origin === "seed" || !event.agent) return;
+
     const actor = this.ensureActor(event.agent);
+    // Put the figure straight onto its first target instead of letting it slide
+    // in from the origin, which reads as an unrelated object crossing the tree.
+    if (!actor.hasPos) {
+      const target = this.layout.position(event.path);
+      if (target) {
+        actor.x = target.x;
+        actor.y = target.y;
+        actor.hasPos = true;
+      }
+    }
     // The model already flashed the file's color/highlight; we add the beam.
     if (this.beams.length < MAX_BEAMS) {
       this.beams.push({ actor: event.agent, target: event.path, color: actor.color, age: 0, life: BEAM_LIFE_SECONDS });
@@ -409,13 +429,20 @@ export class GourceRenderer {
   private updateActors(dt: number): void {
     for (const actor of this.actors.values()) {
       const intensity = this.sim.getActor(actor.agent)?.intensity ?? 0;
-      const label = actor.label;
+      // The figure never fades out entirely: an idle agent is still present and
+      // must stay findable, it just stops drawing attention.
+      const alpha = 0.4 + 0.6 * intensity;
       if (actor.hasPos) {
-        label.position.set(actor.x, actor.y + 4, 1);
-        label.visible = true;
-        (label.material as SpriteMaterial).opacity = 0.35 + 0.65 * intensity;
+        actor.figure.position.set(actor.x, actor.y + AVATAR_WORLD_HEIGHT * 0.5, 2);
+        actor.figure.visible = true;
+        (actor.figure.material as SpriteMaterial).opacity = alpha;
+
+        actor.label.position.set(actor.x, actor.y + AVATAR_WORLD_HEIGHT + 1.5, 2);
+        actor.label.visible = true;
+        (actor.label.material as SpriteMaterial).opacity = alpha;
       } else {
-        label.visible = false;
+        actor.figure.visible = false;
+        actor.label.visible = false;
       }
       // ease actor toward its most recent beam target
       const beam = this.latestBeamFor(actor.agent);
@@ -511,10 +538,17 @@ export class GourceRenderer {
     const existing = this.actors.get(agent);
     if (existing) return existing;
     const color = hashColor(`actor:${agent}`);
-    const label = makeLabel(agent, color);
+
+    const figure = makeAvatar(color);
+    figure.visible = false;
+    this.scene.add(figure);
+
+    // Session ids are long; the tail is what distinguishes two agents.
+    const label = makeLabel(shortAgentName(agent), color, 0.6);
     label.visible = false;
     this.scene.add(label);
-    const view: ActorView = { agent, color, x: 0, y: 0, hasPos: false, label };
+
+    const view: ActorView = { agent, color, x: 0, y: 0, hasPos: false, figure, label };
     this.actors.set(agent, view);
     return view;
   }
@@ -551,6 +585,32 @@ export class GourceRenderer {
 
 /** Shared scratch color to avoid per-frame allocation in the lerp path. */
 const tmpColor = new Color();
+
+/** Sprite carrying the agent's figure, sized in world units. */
+function makeAvatar(color: number): Sprite {
+  const texture = new CanvasTexture(createAvatarCanvas(color));
+  const material = new SpriteMaterial({
+    map: texture,
+    transparent: true,
+    // Drawn on top of the tree: the figure is the subject, not part of the
+    // structure it moves over.
+    depthTest: false,
+  });
+  const sprite = new Sprite(material);
+  sprite.scale.set(AVATAR_WORLD_HEIGHT, AVATAR_WORLD_HEIGHT, 1);
+  return sprite;
+}
+
+/**
+ * A readable short name for an agent.
+ *
+ * Session ids are UUID-length; printed in full they overlap each other and the
+ * tree. The last segment is enough to tell two sessions apart.
+ */
+function shortAgentName(agent: string): string {
+  const tail = agent.slice(agent.lastIndexOf("-") + 1);
+  return tail.length > 8 ? tail.slice(0, 8) : tail || agent;
+}
 
 /** Build a text label sprite (white-ish text tinted by `color`). */
 function makeLabel(text: string, color: number, scale = 1): Sprite {

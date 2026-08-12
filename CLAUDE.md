@@ -31,18 +31,25 @@ Each Gource "user" (the on-screen actor/avatar) represents **one agent**.
 
 ## Architecture
 
-Data flows through four stages. Keep this separation when adding code.
+Data flows through five stages. Keep this separation when adding code.
 
-1. **Capture** — `.claude/settings.json` hooks fire an adapter script.
-   - `PostToolUse` on `Write` → `A` (added) or `M` (modified)
-   - `PostToolUse` on `Edit` / `MultiEdit` → `M`
-   - `PostToolUse` on `Bash` → parse the command for `rm`/`rmdir`/`mv`/`mkdir`/`touch`/`cp`
-     (deletions and directory ops only reach us this way — Claude has no native Delete tool)
-   - `PreToolUse` on `Write` → decide `A` vs `M` by checking if the file already exists
-2. **Normalize** — `hooks/emit_event.py` reads the hook JSON on stdin, resolves the
-   path relative to the project root, picks the op type, and emits one Gource line.
-3. **Transport** — a named pipe (MVP) or a local socket daemon (multi-session).
-4. **Render** — `gource --realtime --log-format custom -` (external binary for now).
+1. **Seed** — `graphagents/tree.py` walks the project root once at daemon boot and publishes
+   the existing tree as `origin: "seed"` events. Without it the graph opens blank and only
+   ever holds the handful of files an agent happened to touch — nothing like Gource.
+2. **Capture** — two sources, deliberately (see "Conventions & gotchas"):
+   - `.claude/settings.json` hooks fire `hooks/emit_event.py` and carry the **agent id**.
+     `PostToolUse` on `Write` → `A`/`M`, on `Edit`/`MultiEdit` → `M`, on `Bash` → parse the
+     command for `rm`/`rmdir`/`mv`/`mkdir`/`touch`/`cp`.
+   - `daemon/watcher.py` (inotify via watchdog) reports **every** change on disk, with no
+     idea who caused it.
+3. **Normalize + aggregate** — `daemon/server.py` owns the shared state: the set of seen
+   paths (drives `A` vs `M`, and lets a directory delete prune its subtree), the seed
+   snapshot, the replay buffer, and the last agent to act (which is what attributes a
+   filesystem change to an agent).
+4. **Transport** — a Unix socket for ingest; WebSocket + static HTTP on one port out.
+5. **Render** — `web/` (three.js), not the Gource binary. The `gource --realtime` path
+   described below is the original design, kept because the log format is still our
+   vocabulary.
 
 ### Gource custom log format
 Pipe-delimited: `timestamp|user|type|path|color`
@@ -62,11 +69,14 @@ Pipe-delimited: `timestamp|user|type|path|color`
 ## Intended layout
 
 ```
-hooks/emit_event.py   # hook entrypoint: JSON in → Gource line out
-daemon/server.py      # (later) aggregates multiple sessions, feeds Gource
-config/settings.json  # hooks to install into a target project's .claude/
-avatars/              # one image per agent (gource --user-image-dir)
-run.sh                # starts the pipe + gource with the right flags
+graphagents/normalize.py  # pure: hook JSON → Event; also seed_event / fs_event
+graphagents/tree.py       # boot snapshot of the observed project
+hooks/emit_event.py       # hook entrypoint: JSON in → daemon socket
+daemon/server.py          # EventHub: seed, attribution, dedupe, WebSocket + HTTP
+daemon/watcher.py         # inotify watcher (watchdog)
+config/settings.json      # hooks to install into a target project's .claude/
+web/src/avatar.ts         # the agent figure, painted on a canvas
+run.sh / start.sh         # minimal launcher / full bootstrap
 ```
 
 ## Running (target workflow)
@@ -87,10 +97,18 @@ tail -f /tmp/claude-gource.pipe | gource --realtime --log-format custom \
 - **Never let the adapter fail loudly.** A crashing hook disrupts the user's Claude Code
   session. Wrap logic defensively; on error, exit 0 and stay silent.
 - **Paths are relative to the project root** so Gource's directory tree stays clean.
-- **`A` vs `M`** requires knowing prior existence — track seen paths or check the FS in `PreToolUse`.
-- **Two capture sources, deliberate trade-off:** hooks give *authorship* but only cover
-  Claude's file tools; a filesystem watcher (inotify/fswatch) gives *completeness* but loses
-  attribution. Hooks are primary; a watcher is a future gap-filler, not a replacement.
+- **`A` vs `M`** requires knowing prior existence — the daemon's `known_paths` set decides it.
+- **Two capture sources, both required.** Hooks give *authorship* but only cover Claude's
+  file tools and cannot resolve a glob or a compound command; the watcher gives
+  *completeness* but no attribution. They are combined in `EventHub`: a filesystem change
+  within `ATTRIBUTION_WINDOW_SECONDS` of a hook inherits that hook's agent, and a path a hook
+  just reported is suppressed on the watcher side so one write flashes once. Neither source
+  replaces the other.
+- **When the parser would have to guess, it stays silent.** `_parse_bash` returns `None` for
+  globs and directory destinations rather than inventing a path: a wrong node stays on screen
+  forever, a missing one is filled in by the watcher milliseconds later.
+- **An event with `agent: ""` must never create an actor** — seeded files and unattributed
+  changes are real, but nobody did them on camera.
 - If you fork/embed Gource's C++ source later, note it is **GPLv3** — that affects distribution.
 
 ## Agents & TDD workflow
@@ -116,24 +134,27 @@ asking the tester for the RED tests, not by asking a developer to implement blin
 
 ## Status
 
-Web MVP implemented and verified end-to-end (TDD, all via the specialist agents).
+Web MVP implemented and verified end-to-end (TDD).
 
-- **Backend** (`graphagents/normalize.py`, `hooks/emit_event.py`, `daemon/server.py`): 36/36
-  pytest green. Hook is stdlib-only and exits 0 on garbage input. Daemon ingests hook events
-  on a Unix socket, then serves `web/dist` over HTTP **and** broadcasts events over WebSocket
-  (`/ws`) on a single port (`:8080`) — one forwarded port is enough for remote/SSH use, and
-  the browser derives the socket URL from its own origin. A/M logic lives in the daemon via a
-  `known_paths` set.
-- **Frontend** (`web/`): 23/23 vitest green, `tsc` + `vite build` clean. Gource-style WebGL
-  renderer (three.js force layout + `UnrealBloomPass` + per-actor beams), pure `simulation.ts`
-  model, typed `parseEvent`, auto-reconnecting `wsClient.ts`.
-- **Integration:** real Write → hook → daemon → WebSocket delivers the correct event shape;
-  HTTP serves the built page. **Not yet verified:** the actual in-browser visual (no browser run).
+- **Backend** (`graphagents/`, `hooks/`, `daemon/`): 97/97 pytest green. Hook is stdlib-only
+  and exits 0 on garbage input. Daemon seeds the project tree at boot, ingests hook events on
+  a Unix socket, watches the filesystem, and serves `web/dist` over HTTP **and** broadcasts
+  events over WebSocket (`/ws`) on a single port (`:8080`) — one forwarded port is enough for
+  remote/SSH use, and the browser derives the socket URL from its own origin.
+- **Frontend** (`web/`): 66/66 vitest green, `tsc` + `vite build` clean. Gource-style WebGL
+  renderer (three.js force layout + `UnrealBloomPass` + per-agent figure and beams), pure
+  `simulation.ts` model, typed `parseEvent`, auto-reconnecting `wsClient.ts`.
+- **Integration** (verified against a live daemon): tree seeded on connect; a Write flashes
+  once across both channels; `cp *.md docs/` reports each file actually copied, credited to
+  the agent; `rm -rf docs/` prunes the subtree; a non-agent edit appears with no actor.
+  **Not yet verified:** the actual in-browser visual (no browser available on this host).
 
-Run: `./run.sh` (starts the daemon). Build the front once with `cd web && npm install && npm run build`.
-Install capture by copying the `hooks` block from `config/settings.json` into the observed
-project's `.claude/settings.json`. Deps: `pip install -e '.[daemon]'` for the daemon; the hook
-needs nothing. See "Mandatory rules" and "Agents & TDD workflow" for how changes are made.
+Run: `GRAPHAGENTS_PROJECT_ROOT=/path/to/observed ./start.sh`. Point the root at the project
+you want to *watch*, not at `graph-agents`. Install attribution by copying the `hooks` block
+from `config/settings.json` into the observed project's `.claude/settings.json` — hook changes
+only apply to sessions started afterwards. Deps: `pip install -e '.[daemon]'`; the hook needs
+nothing. Debug an empty screen with `GRAPHAGENTS_DEBUG_LOG` on the hook command.
 
-Not yet built: per-subagent attribution (currently one actor per session), Bash `mv` paired
-`A`-of-destination, user avatars/images, recorded-session replay/export.
+Not yet built: per-subagent attribution (currently one actor per session), custom avatar
+*images* per agent, `.gitignore` parsing, recorded-session replay/export. Attribution is
+time-based, so simultaneous agents can be credited to one of them.

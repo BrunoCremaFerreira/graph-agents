@@ -98,7 +98,11 @@ class SimulationImpl implements Simulation {
   private readonly actors = new Map<string, Actor>();
 
   applyEvent(event: AgentEvent): void {
-    this.touchActor(event.agent);
+    // An empty agent means nobody could be credited: the project tree the
+    // daemon seeds at boot, or a change on disk with no hook around it. Making
+    // an actor for it would put a figure and a beam on screen for work no agent
+    // did.
+    if (event.agent) this.touchActor(event.agent);
 
     if (event.type === "D") {
       this.markDeleted(event.path);
@@ -109,7 +113,7 @@ class SimulationImpl implements Simulation {
     for (const dir of ancestorDirs(event.path)) {
       this.ensureDir(dir);
     }
-    this.touchFile(event.path, event.color);
+    this.touchFile(event.path, event.color, event.origin === "seed");
   }
 
   tick(dtSeconds: number): void {
@@ -167,12 +171,22 @@ class SimulationImpl implements Simulation {
     });
   }
 
-  private touchFile(path: string, color: string): void {
+  /**
+   * Add or refresh a file node.
+   *
+   * A seeded file was already on disk before anyone connected, so it enters the
+   * tree cold: no highlight, and at the dim baseline the renderer gives idle
+   * files. Otherwise the whole repository would flare up at boot as if every
+   * file had just been written.
+   */
+  private touchFile(path: string, color: string, seeded = false): void {
+    const highlight = seeded ? 0 : 1;
+    const opacity = seeded ? 0 : 1;
     const existing = this.nodes.get(path);
     if (existing) {
       existing.kind = "file";
-      existing.highlight = 1;
-      existing.opacity = 1;
+      existing.highlight = highlight;
+      existing.opacity = opacity;
       existing.color = color;
       return;
     }
@@ -180,8 +194,8 @@ class SimulationImpl implements Simulation {
       path,
       kind: "file",
       parent: parentOf(path),
-      highlight: 1,
-      opacity: 1,
+      highlight,
+      opacity,
       color,
     });
   }

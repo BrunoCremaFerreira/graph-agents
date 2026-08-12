@@ -33,6 +33,30 @@ def _socket_path() -> str:
     return os.environ.get("GRAPHAGENTS_SOCKET", DEFAULT_SOCKET_PATH)
 
 
+def _log_failure(error: BaseException) -> None:
+    """Append `error` to ``GRAPHAGENTS_DEBUG_LOG``, if that variable is set.
+
+    Silence is the rule, but total silence made the commonest failure -- the
+    daemon simply not running -- indistinguishable from a healthy setup with
+    nothing to show. This opt-in log is the only way to tell the two apart, and
+    it stays off unless the variable is set. Failing to write it is itself
+    ignored: diagnostics must never become the thing that breaks the session.
+    """
+    path = os.environ.get("GRAPHAGENTS_DEBUG_LOG")
+    if not path:
+        return
+    try:
+        import datetime
+        import traceback
+
+        stamp = datetime.datetime.now().isoformat(timespec="seconds")
+        detail = "".join(traceback.format_exception_only(type(error), error)).strip()
+        with open(path, "a", encoding="utf-8") as handle:
+            handle.write(f"{stamp} socket={_socket_path()} {detail}\n")
+    except Exception:
+        pass
+
+
 def _read_stdin() -> str:
     return sys.stdin.buffer.read().decode("utf-8", errors="replace")
 
@@ -57,8 +81,8 @@ def main() -> None:
 if __name__ == "__main__":
     try:
         main()
-    except Exception:
+    except Exception as error:
         # Fail silently: a crashing hook must not break the agent loop.
-        pass
+        _log_failure(error)
     finally:
         sys.exit(0)

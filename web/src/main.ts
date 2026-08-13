@@ -10,6 +10,7 @@ import { createSimulation } from "./simulation";
 import { createRenderer } from "./renderer";
 import { createWsClient, resolveWsUrl } from "./wsClient";
 import { createContextHud } from "./contextHud";
+import { createEventHud } from "./eventHud";
 
 function boot(): void {
   const canvas = document.getElementById("stage") as HTMLCanvasElement | null;
@@ -19,11 +20,14 @@ function boot(): void {
   const renderer = createRenderer(canvas, sim);
   const contextEl = document.getElementById("context");
   const contextHud = contextEl ? createContextHud(contextEl) : null;
+  const logEl = document.getElementById("log");
+  const eventHud = logEl ? createEventHud(logEl) : null;
 
   const client = createWsClient(
     (event) => {
       sim.applyEvent(event);
       renderer.onEvent(event);
+      eventHud?.push(event);
     },
     resolveWsUrl(),
     { onMeta: (meta) => contextHud?.setMeta(meta) },

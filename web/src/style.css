@@ -12,10 +12,19 @@ body {
   height: 100vh;
 }
 
+/*
+ * Bottom-left column: recent activity above, title + shortcuts below, both
+ * anchored to the bottom edge. One element, not two floating blocks — a
+ * separate list would have to guess this one's height to sit above it.
+ */
 #hud {
   position: fixed;
   left: 12px;
   bottom: 10px;
+  display: flex;
+  flex-direction: column;
+  justify-content: flex-end;
+  align-items: flex-start;
   color: #8a8f98;
   font: 12px/1.4 system-ui, sans-serif;
   pointer-events: none;
@@ -24,6 +33,76 @@ body {
 
 #hud .keys {
   display: block;
+  color: #5c6067;
+}
+
+/*
+ * Recent changes, newest first. `pointer-events: auto` re-enables hit-testing
+ * that `#hud` turned off, which is what lets the wheel scroll this list; the
+ * zoom handler is bound to the canvas, so it never sees those events. The
+ * scrollbar is hidden and the tail fades out under a mask (an overlay would
+ * have to match the backdrop colour and would read as a border).
+ */
+#log {
+  list-style: none;
+  margin: 0 0 8px;
+  padding: 0;
+  max-height: 30vh;
+  max-width: 40vw;
+  overflow-y: auto;
+  overflow-x: hidden;
+  pointer-events: auto;
+  scrollbar-width: none;
+  -webkit-mask-image: linear-gradient(to bottom, #000 60%, transparent);
+  mask-image: linear-gradient(to bottom, #000 60%, transparent);
+}
+
+#log::-webkit-scrollbar {
+  display: none;
+}
+
+#log li {
+  display: flex;
+  align-items: baseline;
+  white-space: nowrap;
+}
+
+/* The glyph is the only coloured thing in the HUD. */
+#log .op {
+  flex: 0 0 auto;
+  width: 0.9em;
+  color: #5c6067;
+}
+
+#log .op.a {
+  color: #33ff33;
+}
+
+#log .op.m {
+  color: #ffaa00;
+}
+
+#log .op.d {
+  color: #ff3333;
+}
+
+/* The directory is what gets clipped when a path is too long; the name stays. */
+#log .dir {
+  flex: 0 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  color: #5c6067;
+}
+
+#log .name {
+  flex: 0 0 auto;
+  color: #8a8f98;
+}
+
+#log .rep {
+  flex: 0 0 auto;
+  margin-left: 6px;
   color: #5c6067;
 }
 

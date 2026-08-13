@@ -60,6 +60,7 @@ import {
   selectFileLabels,
   snapToPixelGrid,
   spriteHeightForEm,
+  actorDisplayName,
   MAX_FILE_LABELS,
   type LabelCandidate,
 } from "./labels";
@@ -83,6 +84,8 @@ interface ActorView {
   /** The Gource-style figure that walks the tree. */
   figure: Sprite;
   label: Sprite;
+  /** Caption currently painted on `label`, so it is repainted only on change. */
+  labelText: string;
 }
 
 /**
@@ -327,7 +330,7 @@ export class GourceRenderer {
     // the file itself for the watcher case.
     if (event.origin === "seed" || !event.agent) return;
 
-    const actor = this.ensureActor(event.agent);
+    const actor = this.ensureActor(event.agent, event.label);
     // Put the figure straight onto its first target instead of letting it slide
     // in from the origin, which reads as an unrelated object crossing the tree.
     if (!actor.hasPos) {
@@ -613,9 +616,12 @@ export class GourceRenderer {
     return w / Math.max(1, h);
   }
 
-  private ensureActor(agent: string): ActorView {
+  private ensureActor(agent: string, label: string): ActorView {
     const existing = this.actors.get(agent);
-    if (existing) return existing;
+    if (existing) {
+      this.renameActor(existing, label);
+      return existing;
+    }
     const color = hashColor(`actor:${agent}`);
 
     // The figure stays in the main scene: it is part of what should glow.
@@ -623,14 +629,48 @@ export class GourceRenderer {
     figure.visible = false;
     this.scene.add(figure);
 
-    // Session ids are long; the tail is what distinguishes two agents.
-    const label = this.makeLabel(shortAgentName(agent), color);
-    label.visible = false;
-    this.overlayScene.add(label);
+    // The agent type when the daemon sent one; otherwise the shortened id, since
+    // session ids are long and only their tail distinguishes two agents.
+    const labelText = actorDisplayName(label, agent);
+    const sprite = this.makeLabel(labelText, color);
+    sprite.visible = false;
+    this.overlayScene.add(sprite);
 
-    const view: ActorView = { agent, color, x: 0, y: 0, hasPos: false, figure, label };
+    const view: ActorView = {
+      agent,
+      color,
+      x: 0,
+      y: 0,
+      hasPos: false,
+      figure,
+      label: sprite,
+      labelText,
+    };
     this.actors.set(agent, view);
     return view;
+  }
+
+  /**
+   * Repaint an actor's caption when a better one arrives.
+   *
+   * An actor is created by its first event, and that event may well come from
+   * the watcher with no `label` at all -- the readable agent type only shows up
+   * on the next hook frame. So the name is not fixed at creation. An empty or
+   * unchanged caption is ignored: a good name is never replaced by a worse one,
+   * and repainting costs a canvas and a texture upload.
+   */
+  private renameActor(view: ActorView, label: string): void {
+    const next = actorDisplayName(label, view.agent);
+    if (typeof label !== "string" || !label.trim() || next === view.labelText) return;
+
+    const material = view.label.material as SpriteMaterial;
+    material.map?.dispose();
+    const { texture, aspect, emFraction } = this.makeLabelTexture(next, view.color);
+    material.map = texture;
+    material.needsUpdate = true;
+    view.label.userData.aspect = aspect;
+    view.label.userData.emFraction = emFraction;
+    view.labelText = next;
   }
 
   private latestBeamFor(agent: string): Beam | undefined {
@@ -893,17 +933,6 @@ function makeAvatar(color: number): Sprite {
   const sprite = new Sprite(material);
   sprite.scale.set(AVATAR_WORLD_HEIGHT, AVATAR_WORLD_HEIGHT, 1);
   return sprite;
-}
-
-/**
- * A readable short name for an agent.
- *
- * Session ids are UUID-length; printed in full they overlap each other and the
- * tree. The last segment is enough to tell two sessions apart.
- */
-function shortAgentName(agent: string): string {
-  const tail = agent.slice(agent.lastIndexOf("-") + 1);
-  return tail.length > 8 ? tail.slice(0, 8) : tail || agent;
 }
 
 /** Factory that keeps construction details out of `main.ts`. */

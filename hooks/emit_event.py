@@ -57,6 +57,33 @@ def _log_failure(error: BaseException) -> None:
         pass
 
 
+def _trace(raw: str) -> None:
+    """Append `raw` to ``GRAPHAGENTS_TRACE_LOG``, if that variable is set.
+
+    Sibling of :func:`_log_failure`: that one records *failures*, this one
+    records *arrivals*. It exists to answer a question the pipeline otherwise
+    destroys -- what Claude Code actually puts in the ``PostToolUse`` JSON.
+    ``normalize.py`` reads only the handful of fields it knows about, so any
+    per-subagent identity would be dropped without ever being seen; with the
+    variable set, the payload is preserved verbatim and can be inspected.
+
+    Hence it runs *before* the parse and before the send: the most interesting
+    payload to capture is the one that does not parse, and collection typically
+    happens exactly when the daemon is down. One line per invocation, no
+    timestamp prefix, so ``json.loads`` on a line hands back the original dict.
+    Writing it is best-effort -- diagnostics must never become the thing that
+    breaks the session.
+    """
+    path = os.environ.get("GRAPHAGENTS_TRACE_LOG")
+    if not path:
+        return
+    try:
+        with open(path, "a", encoding="utf-8") as handle:
+            handle.write(raw.rstrip("\n") + "\n")
+    except Exception:
+        pass
+
+
 def _read_stdin() -> str:
     return sys.stdin.buffer.read().decode("utf-8", errors="replace")
 
@@ -72,6 +99,7 @@ def _send(payload: dict, socket_path: str) -> None:
 
 def main() -> None:
     raw = _read_stdin()
+    _trace(raw)
     payload = json.loads(raw)
     if not isinstance(payload, dict):
         return

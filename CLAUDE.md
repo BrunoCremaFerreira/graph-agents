@@ -64,24 +64,42 @@ Pipe-delimited: `timestamp|user|type|path|color`
 - Example: `1754870400|agent-worker|M|src/api/users.ts|FFAA00`
 
 ### Agent attribution (the hard part)
-"Show what *each* agent is doing" means mapping every op to an actor.
-- **Default / guaranteed:** use the hook's `session_id` as the Gource user. This already
-  distinguishes multiple Claude Code instances running in parallel.
-- **Per-subagent granularity** (Task tool) may not be in the hook JSON. Fallbacks, in order:
-  read `transcript_path` (session JSONL) to find the active subagent; inject an id via env
-  var at subagent creation; else collapse to one actor per session.
-- Start with **one actor per session**; add per-subagent later. Do not over-engineer this early.
+"Show what *each* agent is doing" means mapping every op to an actor. What the hook JSON
+actually carries was settled by capture, not by reasoning — measured against Claude Code
+2.1.229 with `GRAPHAGENTS_TRACE_LOG` (below). Re-measure before trusting it on a new version:
+
+- A tool call made by the **orchestrator** carries `session_id` and **no** `agent_id` /
+  `agent_type` — the keys are absent, not empty.
+- A tool call made by a **subagent** carries the same `session_id` **plus** `agent_id` (an
+  opaque per-subagent id) and `agent_type` (the readable name: `desenvolvedor-backend`,
+  `desenvolvedor-tester`, ...). Subagent tool calls **do** fire the hook; this was the open
+  question, and the answer is yes.
+
+So `actor_of` (in `normalize.py`, shared with the daemon) resolves the actor as `agent_id`
+when usable, else `session_id`, else `""`. `agent_type` becomes the event's `label`.
+
+**`agent` is identity; `label` is only text.** The actor key and its color hash come from
+`agent`, so two subagents of the same type stay two figures with two colors. Never key an
+actor on the label.
+
+The `label` had to reach the watcher path too: a filesystem change credited to a subagent
+inherits its id *and* its name, or the specialist's figure goes nameless for half the events
+it causes.
 
 ## Intended layout
 
 ```
-graphagents/normalize.py  # pure: hook JSON → Event; also seed_event / fs_event
+graphagents/normalize.py  # pure: hook JSON → Event; also actor_of / seed_event / fs_event
 graphagents/tree.py       # boot snapshot of the observed project
+graphagents/repo.py       # pure: reads .git/HEAD for the branch (never shells out to git)
 hooks/emit_event.py       # hook entrypoint: JSON in → daemon socket
-daemon/server.py          # EventHub: seed, attribution, dedupe, WebSocket + HTTP
+daemon/server.py          # EventHub: seed, attribution, dedupe, meta, WebSocket + HTTP
 daemon/watcher.py         # inotify watcher (watchdog)
 config/settings.json      # hooks to install into a target project's .claude/
 web/src/avatar.ts         # the agent figure, painted on a canvas
+web/src/eventLog.ts       # pure: the recent-changes list model (drops seed, folds repeats)
+web/src/attribution.ts    # pure: has any attributed event arrived? (latch, never unlatches)
+web/src/*Hud.ts           # thin DOM painters: context caption, event list, attribution note
 run.sh / start.sh         # minimal launcher / full bootstrap
 ```
 
@@ -141,12 +159,12 @@ asking the tester for the RED tests, not by asking a developer to implement blin
 
 Web MVP implemented and verified end-to-end (TDD).
 
-- **Backend** (`graphagents/`, `hooks/`, `daemon/`): 97/97 pytest green. Hook is stdlib-only
+- **Backend** (`graphagents/`, `hooks/`, `daemon/`): 182/182 pytest green. Hook is stdlib-only
   and exits 0 on garbage input. Daemon seeds the project tree at boot, ingests hook events on
   a Unix socket, watches the filesystem, and serves `web/dist` over HTTP **and** broadcasts
   events over WebSocket (`/ws`) on a single port (`:8080`) — one forwarded port is enough for
   remote/SSH use, and the browser derives the socket URL from its own origin.
-- **Frontend** (`web/`): 107/107 vitest green, `tsc` + `vite build` clean. Gource-style WebGL
+- **Frontend** (`web/`): 279/279 vitest green, `tsc` + `vite build` clean. Gource-style WebGL
   renderer (three.js force layout + `UnrealBloomPass` + per-agent figure and beams), pure
   `simulation.ts` model, typed `parseEvent`, auto-reconnecting `wsClient.ts`. Label placement
   lives in pure `labels.ts` (like `view.ts`) because `renderer.ts` needs a GL context and
@@ -172,7 +190,10 @@ Web MVP implemented and verified end-to-end (TDD).
   HiDPI screens.
 - **Integration** (verified against a live daemon): tree seeded on connect; a Write flashes
   once across both channels; `cp *.md docs/` reports each file actually copied, credited to
-  the agent; `rm -rf docs/` prunes the subtree; a non-agent edit appears with no actor.
+  the agent; `rm -rf docs/` prunes the subtree; a non-agent edit appears with no actor; the
+  meta frame arrives first and a branch switch is pushed without reconnecting; real captured
+  hook payloads replayed through the daemon yield two distinct actors, the subagent's carrying
+  its `agent_type` as a label.
   **Not yet verified:** the actual in-browser visual (this host has no Chrome, and a headless
   screenshot of an animated force layout proves nothing).
 
@@ -182,10 +203,19 @@ from `config/settings.json` into the observed project's `.claude/settings.json` 
 only apply to sessions started afterwards. Deps: `pip install -e '.[daemon]'`; the hook needs
 nothing. Rebuilding `web/dist` (or running vitest/tsc) needs Node 18+ — `start.sh` silently
 serves a stale `dist` when node is missing, so a front-end change can look like it did
-nothing. Debug an empty screen with `GRAPHAGENTS_DEBUG_LOG` on the hook command.
+nothing. Debug an empty screen with `GRAPHAGENTS_DEBUG_LOG` (records hook *failures*) or
+`GRAPHAGENTS_TRACE_LOG` (records every raw payload, which is how the shape of the hook JSON
+gets settled on a new Claude Code version) on the hook command.
 
-Not yet built: per-subagent attribution (currently one actor per session), custom avatar
-*images* per agent, `.gitignore` parsing, recorded-session replay/export. Attribution is
-time-based, so simultaneous agents can be credited to one of them. Label textures are
+**A tree that updates while nobody is on camera means the hooks are not installed.** The
+watcher alone gives completeness with no authorship, every event arrives with `agent: ""`,
+and an empty agent never creates an actor — so the graph looks alive and unattended, which is
+indistinguishable from "no agent is working right now". That ambiguity cost real hours; the
+page now says so itself, in the HUD, once activity has arrived with no author. This repo has
+the block installed in its own `.claude/settings.json`.
+
+Not yet built: custom avatar *images* per agent, `.gitignore` parsing, recorded-session
+replay/export. Attribution of *watcher* events is time-based, so simultaneous agents can be
+credited to one of them — hook events themselves are attributed exactly. Label textures are
 rasterised once at the pixel ratio the renderer had at construction, so dragging the window
 to a monitor of a different DPI leaves the names slightly soft until a reload.

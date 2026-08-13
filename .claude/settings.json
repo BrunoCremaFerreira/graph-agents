@@ -1,0 +1,34 @@
+{
+  "//": "graph-agents capture hooks, installed for THIS project as the observed one.",
+  "//source": "Copied from config/settings.json. See that file for the full rationale.",
+  "//attribution": [
+    "The watcher already reports every change on disk, so the tree stays correct",
+    "without this block. What the hook adds is WHO: the agent id that puts a",
+    "figure and a beam on the change. Without it every event arrives with an",
+    "empty agent, and an empty agent never creates an actor -- the tree updates",
+    "while nobody is on camera.",
+    "Claude Code reads settings.json at session start, so a session already open",
+    "when this file appears keeps running without it. Restart to pick it up."
+  ],
+  "//debugging": [
+    "GRAPHAGENTS_SOCKET overrides the ingest socket and must match the daemon.",
+    "GRAPHAGENTS_DEBUG_LOG names a file to append hook FAILURES to -- the only",
+    "way to tell 'daemon down' from 'nothing happened'.",
+    "GRAPHAGENTS_TRACE_LOG names a file to append every raw payload to, which is",
+    "how you find out what a given Claude Code version puts in the hook JSON.",
+    "Prefix either on the command below to enable it."
+  ],
+  "hooks": {
+    "PostToolUse": [
+      {
+        "matcher": "Write|Edit|MultiEdit|Bash",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "python3 /home/brn/projects/graph-agents/hooks/emit_event.py"
+          }
+        ]
+      }
+    ]
+  }
+}

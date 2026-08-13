@@ -11,6 +11,8 @@ import { createRenderer } from "./renderer";
 import { createWsClient, resolveWsUrl } from "./wsClient";
 import { createContextHud } from "./contextHud";
 import { createEventHud } from "./eventHud";
+import { createAttributionMonitor } from "./attribution";
+import { createAttributionHud } from "./attributionHud";
 
 function boot(): void {
   const canvas = document.getElementById("stage") as HTMLCanvasElement | null;
@@ -22,12 +24,17 @@ function boot(): void {
   const contextHud = contextEl ? createContextHud(contextEl) : null;
   const logEl = document.getElementById("log");
   const eventHud = logEl ? createEventHud(logEl) : null;
+  const attributionEl = document.getElementById("attribution");
+  const attributionHud = attributionEl ? createAttributionHud(attributionEl) : null;
+  const attribution = createAttributionMonitor();
 
   const client = createWsClient(
     (event) => {
       sim.applyEvent(event);
       renderer.onEvent(event);
       eventHud?.push(event);
+      attribution.observe(event);
+      attributionHud?.update(eventHud?.hasEntries() ?? false, attribution.attributed());
     },
     resolveWsUrl(),
     { onMeta: (meta) => contextHud?.setMeta(meta) },

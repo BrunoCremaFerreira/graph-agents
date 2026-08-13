@@ -107,6 +107,18 @@ body {
 }
 
 /*
+ * Attribution footnote, between the activity list and the title. Same dead grey
+ * as the shortcut line: no border, no background, no alert glyph — it reports a
+ * missing capture hook, not a failure of the page. No `display` rule here, so
+ * the `hidden` attribute keeps working (see #context-branch for the alternative).
+ */
+#attribution {
+  margin: 0 0 8px;
+  max-width: 40vw;
+  color: #5c6067;
+}
+
+/*
  * Observed root + git branch, bottom centre. `pointer-events: none` is
  * load-bearing: the canvas handles `pointerdown` for panning, so anything
  * painted on top of it would swallow a drag that started here.

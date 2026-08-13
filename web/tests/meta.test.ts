@@ -46,6 +46,11 @@ function validEvent(): Record<string, unknown> {
   };
 }
 
+/** A subagent's event frame: opaque id plus the readable `label`. */
+function labelledEvent(): Record<string, unknown> {
+  return { ...validEvent(), agent: "a1b2c3d4e5f60718", label: "desenvolvedor-backend" };
+}
+
 describe("parseMeta", () => {
   it("parses a well-formed meta frame into root and branch", () => {
     const parsed = parseMeta(validMeta());
@@ -150,5 +155,11 @@ describe("parseMeta", () => {
 describe("the two parsers never accept each other's frames", () => {
   it("parseMeta returns null for a valid event frame", () => {
     expect(parseMeta(validEvent())).toBeNull();
+  });
+
+  it("parseMeta returns null for an event carrying an agent label", () => {
+    // `label` is display text on an EVENT. It must not be mistaken for part of
+    // the HUD frame, or a subagent's edit would rewrite the project name.
+    expect(parseMeta(labelledEvent())).toBeNull();
   });
 });

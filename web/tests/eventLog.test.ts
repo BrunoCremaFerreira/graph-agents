@@ -39,7 +39,16 @@ function event(
   overrides: Partial<AgentEvent> = {},
 ): AgentEvent {
   const color = type === "A" ? "33FF33" : type === "M" ? "FFAA00" : "FF3333";
-  return { ts: 1000, agent: "sess-1", type, path, color, origin: "hook", ...overrides };
+  return {
+    ts: 1000,
+    agent: "sess-1",
+    type,
+    path,
+    color,
+    origin: "hook",
+    label: "",
+    ...overrides,
+  };
 }
 
 describe("event log: what gets in", () => {

@@ -210,3 +210,53 @@ export function selectFileLabels(
   eligible.sort((a, b) => b.highlight - a.highlight || (a.path < b.path ? -1 : a.path > b.path ? 1 : 0));
   return eligible.length > max ? eligible.slice(0, max) : eligible;
 }
+
+/**
+ * Longest caption allowed over an agent's figure.
+ *
+ * "desenvolvedor-frontend" is 22 characters, the longest agent type this
+ * project defines; the cap sits just above it so an everyday name is shown
+ * whole while an invented one cannot run across the screen.
+ */
+export const MAX_ACTOR_LABEL_CHARS = 24;
+
+/** Character standing in for the part of a caption that did not fit. */
+const ELLIPSIS = "…";
+
+/** Longest tail of an opaque id worth printing: enough to tell two apart. */
+const SHORT_AGENT_CHARS = 8;
+
+/**
+ * A readable short name for an agent id.
+ *
+ * Session ids are UUID-length; printed in full they overlap each other and the
+ * tree. The last segment is enough to tell two sessions apart. An opaque
+ * subagent id has no segments, so it is simply cut short -- which is why an
+ * agent that has a readable {@link actorDisplayName} should never come here.
+ * An agent of `""` names nobody: by project rule it never becomes an actor.
+ */
+export function shortAgentName(agent: string): string {
+  if (typeof agent !== "string") return "";
+  const tail = agent.slice(agent.lastIndexOf("-") + 1);
+  return tail.length > SHORT_AGENT_CHARS ? tail.slice(0, SHORT_AGENT_CHARS) : tail || agent;
+}
+
+/**
+ * The caption to draw over an agent's figure.
+ *
+ * `label` is the subagent's agent type -- display text, and the only thing here
+ * a human can read; `agent` is the IDENTITY (actor key and colour seed) and is
+ * used only as a fallback, shortened. An orchestrator carries no type, so it
+ * still gets its shortened session id; an event with neither is an unattributed
+ * or seeded change, and no name is invented for it.
+ *
+ * Never throws: a stale client or a future daemon may send anything, and a bad
+ * caption must not cost us the frame.
+ */
+export function actorDisplayName(label: string, agent: string): string {
+  const text = typeof label === "string" ? label.trim() : "";
+  if (!text) return shortAgentName(typeof agent === "string" ? agent.trim() : "");
+  if (text.length <= MAX_ACTOR_LABEL_CHARS) return text;
+  // Keep the head: it is the part that identifies which agent this is.
+  return text.slice(0, MAX_ACTOR_LABEL_CHARS - 1) + ELLIPSIS;
+}

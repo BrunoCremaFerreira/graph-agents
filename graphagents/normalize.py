@@ -50,7 +50,8 @@ class Event:
 
     Attributes:
         ts: Unix time in seconds (float).
-        agent: Actor id, derived from the hook's top-level ``session_id``.
+        agent: Actor **identity** -- the hook's ``agent_id`` when a subagent made
+            the call, else its ``session_id``. See :func:`actor_of`.
         type: Operation kind, one of ``"A"`` (added), ``"M"`` (modified),
             ``"D"`` (deleted).
         path: Path relative to the observed project root.
@@ -59,6 +60,9 @@ class Event:
         origin: What produced the event -- ``"hook"`` (a Claude tool call),
             ``"seed"`` (the tree snapshot taken at boot) or ``"watch"`` (the
             filesystem watcher).
+        label: Readable name for the actor (``agent_type``, e.g.
+            ``"desenvolvedor-backend"``), for display only. Last field on
+            purpose: every existing positional construction keeps working.
     """
 
     ts: float
@@ -67,6 +71,45 @@ class Event:
     path: str
     color: str
     origin: str = ORIGIN_HOOK
+    label: str = ""
+
+
+def actor_of(hook_json: dict) -> tuple[str, str]:
+    """Return ``(agent, label)`` for one hook payload; never raises.
+
+    Two separate notions, because conflating them costs a figure either way:
+
+      * **agent** is the identity. A subagent call carries the session's
+        ``session_id`` *plus* its own ``agent_id``, so keying on the session
+        alone collapses every specialist of a session into one on-screen actor.
+        The opaque ``agent_id`` is what splits them; the session remains the
+        truthful fallback for the orchestrator's own calls (which carry no
+        ``agent_id`` key at all) and for a junk one.
+      * **label** is ``agent_type``, the readable name a viewer reads under the
+        figure. It never takes part in the identity: a renamed type would
+        otherwise fork one subagent into two actors mid-session, and a malformed
+        ``agent_type`` would cost the attribution that did arrive intact.
+
+    Shared with the daemon on purpose: :class:`daemon.server.EventHub` records
+    the last actor straight from the raw payload even when normalization yields
+    no event (a glob-expanding ``cp``), and two copies of this rule would drift
+    into crediting the watcher's changes to a different figure than the hook's.
+    """
+    if not isinstance(hook_json, dict):
+        return "", ""
+    agent = _usable_text(hook_json.get("agent_id")) or _usable_text(
+        hook_json.get("session_id")
+    )
+    return agent, _usable_text(hook_json.get("agent_type"))
+
+
+def _usable_text(value: object) -> str:
+    """The value as a stripped string, or ``""`` if it is not usable as one.
+
+    Anything non-string (a number, a dict, ``None``) or blank is refused rather
+    than coerced: the project's rule is that garbage must never invent an actor.
+    """
+    return value.strip() if isinstance(value, str) and value.strip() else ""
 
 
 def normalize_event(
@@ -99,7 +142,7 @@ def _normalize(
     if not isinstance(tool_name, str) or not isinstance(tool_input, dict):
         return None
 
-    agent = str(hook_json.get("session_id", ""))
+    agent, label = actor_of(hook_json)
 
     resolved = _resolve_operation(tool_name, tool_input, known_paths, project_root)
     if resolved is None:
@@ -112,6 +155,7 @@ def _normalize(
         type=op_type,
         path=path,
         color=_COLOR_BY_TYPE[op_type],
+        label=label,
     )
 
 
@@ -137,12 +181,16 @@ def fs_event(
     op_type: str,
     agent: str = "",
     ts: float | None = None,
+    label: str = "",
 ) -> Event | None:
     """Build an event for a change the watcher observed, or ``None`` if invalid.
 
-    `agent` is filled in by the daemon from the hook that fired around the same
-    time; an empty string means the change could not be attributed (a manual
-    edit, a build step) and the frontend draws it without an actor.
+    `agent` and `label` are filled in by the daemon from the hook that fired
+    around the same time; the watcher itself knows neither. An empty `agent`
+    means the change could not be attributed (a manual edit, a build step) and
+    the frontend draws it without an actor. `label` travels with `agent` so the
+    specialist's figure keeps its name for the changes only the watcher sees --
+    a glob or a compound command -- which is most of what a busy agent does.
     """
     if op_type not in _COLOR_BY_TYPE or not path:
         return None
@@ -153,6 +201,7 @@ def fs_event(
         path=path,
         color=_COLOR_BY_TYPE[op_type],
         origin=ORIGIN_WATCH,
+        label=label,
     )
 
 

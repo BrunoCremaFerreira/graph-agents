@@ -36,6 +36,12 @@ const OP_CLASS: Record<EventType, string> = { A: "a", M: "m", D: "d" };
 export interface EventHud {
   /** Offer an event to the list. Dropped events (seed) change nothing. */
   push(event: AgentEvent): void;
+  /**
+   * Whether the list holds at least one entry, i.e. whether any real (non-seed)
+   * activity has arrived. Read by the attribution note, which must stay quiet
+   * on an idle page.
+   */
+  hasEntries(): boolean;
 }
 
 /** Build the `<li>` for an entry: glyph, dimmed directory, file name, count. */
@@ -104,6 +110,10 @@ export function createEventHud(listEl: HTMLElement, max?: number): EventHud {
       while (listEl.childElementCount > entries.length && listEl.lastElementChild) {
         listEl.removeChild(listEl.lastElementChild);
       }
+    },
+
+    hasEntries(): boolean {
+      return log.entries().length > 0;
     },
   };
 }

@@ -23,6 +23,16 @@
  * sizing the sprite from the em box, choosing the raster size from the DPR, and
  * snapping positions to the pixel grid -- are arithmetic, not GL, so they
  * belong here where they can be tested without a canvas.
+ *
+ * A fourth defect motivates the actor-name group at the bottom: the name over an
+ * agent's figure is unreadable. It comes from `shortAgentName` in renderer.ts,
+ * which cuts an id at its last `-` and truncates to 8 chars -- fine for a session
+ * UUID, but a subagent's id is opaque (`a747fec535c143044`), so the caption reads
+ * as hex garbage. The daemon now sends the subagent's `agent_type` as a separate
+ * `label` field, and the choice between the two -- readable name when there is
+ * one, shortened id otherwise, and nothing at all for an empty agent, which by
+ * project rule never becomes an actor -- is pure string logic. It belongs here,
+ * not behind a GL context.
  */
 
 import { describe, it, expect } from "vitest";
@@ -34,9 +44,12 @@ import {
   spriteHeightForEm,
   labelFontPixels,
   snapToPixelGrid,
+  actorDisplayName,
+  shortAgentName,
   FILE_LABEL_ZOOM_THRESHOLD,
   LABEL_PIXEL_HEIGHT,
   MAX_FILE_LABELS,
+  MAX_ACTOR_LABEL_CHARS,
   type LabelCandidate,
 } from "../src/labels";
 
@@ -329,5 +342,98 @@ describe("selectFileLabels", () => {
     const nodes = Array.from({ length: 10 }, (_, i) => candidate(`f${i}.ts`, 1));
 
     expect(selectFileLabels(nodes, viewport(20), 3)).toHaveLength(3);
+  });
+});
+
+/** A subagent id as the daemon reports it: opaque, no structure to cut on. */
+const SUBAGENT_ID = "a747fec535c143044";
+
+/** An orchestrator's identity: the session UUID, which has no agent_type. */
+const SESSION_ID = "3f7a1c9e-2b4d-4f6a-8c1e-9b7d4c2a5e01";
+
+/** Every agent_type this project actually defines; all must survive whole. */
+const REAL_AGENT_TYPES = ["desenvolvedor-backend", "desenvolvedor-frontend", "desenvolvedor-tester"];
+
+describe("shortAgentName", () => {
+  it("keeps only the tail of a session UUID, which is what tells two apart", () => {
+    expect(shortAgentName(SESSION_ID)).toBe("9b7d4c2a");
+  });
+
+  it("truncates an opaque id to eight characters", () => {
+    expect(shortAgentName(SUBAGENT_ID)).toBe("a747fec5");
+  });
+
+  it("leaves an already short name untouched", () => {
+    expect(shortAgentName("worker")).toBe("worker");
+  });
+
+  it("names nobody when there is no agent", () => {
+    // An event with agent "" must never create an actor; the shortener must not
+    // hand the renderer a caption for one either.
+    expect(shortAgentName("")).toBe("");
+  });
+});
+
+describe("actorDisplayName", () => {
+  it("captions a subagent with its agent type instead of its opaque id", () => {
+    // The defect: without the label the figure reads "a747fec5".
+    expect(actorDisplayName("desenvolvedor-backend", SUBAGENT_ID)).toBe("desenvolvedor-backend");
+  });
+
+  it("falls back to the shortened session id when the agent has no type", () => {
+    // The orchestrator: no agent_type, so the old behaviour is still the best
+    // available.
+    expect(actorDisplayName("", SESSION_ID)).toBe(shortAgentName(SESSION_ID));
+  });
+
+  it("treats a blank label as no label at all", () => {
+    expect(actorDisplayName("   \t\n ", SUBAGENT_ID)).toBe(shortAgentName(SUBAGENT_ID));
+  });
+
+  it("trims the padding off a label before showing it", () => {
+    expect(actorDisplayName("  desenvolvedor-tester\n", SUBAGENT_ID)).toBe("desenvolvedor-tester");
+  });
+
+  it("captions nobody when there is neither a type nor an agent", () => {
+    // Seeded and unattributed events carry agent "". They are real changes, but
+    // nobody did them on camera, so there is no name to invent.
+    expect(actorDisplayName("", "")).toBe("");
+    expect(actorDisplayName("  ", "  ")).toBe("");
+  });
+
+  it("shows every agent type this project defines in full", () => {
+    for (const type of REAL_AGENT_TYPES) {
+      expect(actorDisplayName(type, SUBAGENT_ID)).toBe(type);
+    }
+  });
+
+  it("caps the caption so a long type cannot run across the screen", () => {
+    const long = "desenvolvedor-especialista-em-integracao-continua-e-deploy";
+
+    expect(actorDisplayName(long, SUBAGENT_ID).length).toBeLessThanOrEqual(MAX_ACTOR_LABEL_CHARS);
+  });
+
+  it("keeps the head of a truncated caption, which is the part that identifies it", () => {
+    const long = "desenvolvedor-especialista-em-integracao-continua-e-deploy";
+
+    expect(actorDisplayName(long, SUBAGENT_ID).startsWith("desenvolvedor")).toBe(true);
+  });
+
+  it("leaves room for the longest agent type plus a little headroom", () => {
+    // 22 chars ("desenvolvedor-frontend") is the longest name in use; a cap at
+    // or below it would truncate a name this project shows every day.
+    expect(MAX_ACTOR_LABEL_CHARS).toBe(24);
+  });
+
+  it("never throws, whatever the daemon or a stale client sends", () => {
+    const junk = [undefined, null, 42, {}, [], true];
+
+    for (const bad of junk) {
+      for (const other of junk) {
+        expect(typeof actorDisplayName(bad as unknown as string, other as unknown as string)).toBe(
+          "string",
+        );
+      }
+    }
   });
 });

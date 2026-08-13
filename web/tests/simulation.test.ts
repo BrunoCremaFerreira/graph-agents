@@ -20,7 +20,8 @@ function event(
   const color = type === "A" ? "33FF33" : type === "M" ? "FFAA00" : "FF3333";
   // `origin` distinguishes live agent activity from the seeded project tree;
   // these tests are all about live activity, hence "hook".
-  return { ts, agent, type, path, color, origin: "hook" };
+  // `label` is display text only; the model keys actors off `agent`.
+  return { ts, agent, type, path, color, origin: "hook", label: "" };
 }
 
 describe("simulation model", () => {

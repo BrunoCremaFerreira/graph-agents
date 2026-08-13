@@ -47,7 +47,13 @@ from websockets.asyncio.server import Server, ServerConnection, broadcast, serve
 from websockets.datastructures import Headers
 from websockets.http11 import Request, Response
 
-from graphagents.normalize import Event, fs_event, normalize_event, seed_event
+from graphagents.normalize import (
+    Event,
+    actor_of,
+    fs_event,
+    normalize_event,
+    seed_event,
+)
 from graphagents.repo import display_root, read_branch
 from graphagents.tree import scan_tree
 
@@ -96,9 +102,12 @@ class EventHub:
         replaceable slot of its own, for the same reason: it is re-published on
         every branch switch, and appending it to either list would let a busy
         session grow the replay or evict the tree from it.
-      * ``_last_hook`` -- the agent that acted most recently, which is how a
-        filesystem change gets attributed to whoever caused it (see
-        :meth:`ingest_fs_change`).
+      * ``_last_hook`` -- the actor that acted most recently, as
+        ``(agent, label, timestamp)``, which is how a filesystem change gets
+        attributed to whoever caused it (see :meth:`ingest_fs_change`). The
+        label is carried alongside the id rather than looked up later: the hub
+        keeps no registry of actors, and an id with no name is a nameless figure
+        on screen.
     """
 
     def __init__(
@@ -120,7 +129,7 @@ class EventHub:
         self._dedupe_window = dedupe_window
         self._coalesce_window = coalesce_window
         self._clock = clock
-        self._last_hook: tuple[str, float] | None = None
+        self._last_hook: tuple[str, str, float] | None = None
         self._hook_paths: dict[str, float] = {}
         self._fs_paths: dict[str, float] = {}
 
@@ -189,9 +198,12 @@ class EventHub:
         # Remember the actor even when the payload yields no drawable event: a
         # `find` or a glob-expanding `cp` still means this agent is the one at
         # work, and the changes the watcher is about to report are its doing.
-        session_id = payload.get("session_id")
-        if isinstance(session_id, str) and session_id:
-            self._last_hook = (session_id, self._clock())
+        # Derived through `actor_of`, the same helper `normalize_event` uses, so
+        # this path cannot credit a subagent's copies to the orchestrator while
+        # the event it did produce carries the subagent.
+        agent, label = actor_of(payload)
+        if agent:
+            self._last_hook = (agent, label, self._clock())
 
         event = normalize_event(
             payload,
@@ -219,9 +231,9 @@ class EventHub:
         if op_type == "M" and self._just_reported(path):
             return
 
-        agent = self._active_agent()
+        agent, label = self._active_agent()
         for target in self._expand(path, op_type):
-            event = fs_event(target, op_type, agent=agent)
+            event = fs_event(target, op_type, agent=agent, label=label)
             if event is not None:
                 self._fs_paths[target] = self._clock()
                 self._publish(event)
@@ -250,11 +262,18 @@ class EventHub:
         stamped = self._fs_paths.get(path)
         return stamped is not None and self._clock() - stamped < self._coalesce_window
 
-    def _active_agent(self) -> str:
+    def _active_agent(self) -> tuple[str, str]:
+        """The ``(agent, label)`` still owning what the watcher reports.
+
+        Both expire together: a name hovering over an actor the graph no longer
+        credits is worse than an anonymous change.
+        """
         if self._last_hook is None:
-            return ""
-        agent, stamped = self._last_hook
-        return agent if self._clock() - stamped < self._attribution_window else ""
+            return "", ""
+        agent, label, stamped = self._last_hook
+        if self._clock() - stamped >= self._attribution_window:
+            return "", ""
+        return agent, label
 
     def _remember_path(self, event: Event) -> None:
         # A deleted path may be re-added later; keep the set reflecting the

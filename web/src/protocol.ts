@@ -40,6 +40,14 @@ export interface AgentEvent {
   color: string;
   /** Where the event came from. Absent on the wire means `"hook"`. */
   origin: EventOrigin;
+  /**
+   * Human-readable name of the actor (the hook's `agent_type`, e.g.
+   * `"desenvolvedor-backend"`), for DISPLAY only. Never an identity: `agent`
+   * remains the actor key and the seed of its color, so two subagents of the
+   * same type stay two figures. Absent on the wire means `""`, which is also
+   * the legitimate orchestrator case (its payload carries no `agent_type`).
+   */
+  label: string;
 }
 
 /** The three valid operation kinds, used for runtime validation. */
@@ -68,6 +76,10 @@ function isFiniteNumber(value: unknown): value is number {
  *   - An absent or unrecognized `origin` degrades to `"hook"` rather than
  *     rejecting the event, so a page served from a newer or older daemon than
  *     the one broadcasting still draws everything it receives.
+ *   - An absent or mistyped `label` degrades to `""` for the same reason: it is
+ *     display text, never a reason to drop a frame. A page built against the
+ *     daemon that broadcasts it still draws every event from one that does not
+ *     (and vice versa) — just without a readable name for the actor.
  *   - NEVER throws: bad input from the network must be handled gracefully.
  *
  * @param raw The value received from the socket (already JSON-parsed or not).
@@ -75,7 +87,7 @@ function isFiniteNumber(value: unknown): value is number {
 export function parseEvent(raw: unknown): AgentEvent | null {
   if (!isRecord(raw)) return null;
 
-  const { ts, agent, type, path, color, origin } = raw;
+  const { ts, agent, type, path, color, origin, label } = raw;
 
   if (!isFiniteNumber(ts)) return null;
   if (typeof agent !== "string") return null;
@@ -88,7 +100,15 @@ export function parseEvent(raw: unknown): AgentEvent | null {
       ? (origin as EventOrigin)
       : "hook";
 
-  return { ts, agent, type: type as EventType, path, color, origin: resolvedOrigin };
+  return {
+    ts,
+    agent,
+    type: type as EventType,
+    path,
+    color,
+    origin: resolvedOrigin,
+    label: typeof label === "string" ? label : "",
+  };
 }
 
 /**

@@ -163,8 +163,14 @@ export function snapToPixelGrid(value: number, origin: number, worldPerPixel: nu
  * A touched file is named wherever the camera is -- that is the event the user
  * is watching for. An idle file is named only once the camera is close enough
  * to have room, faded in over the approach so names do not pop into existence.
+ *
+ * A `pinned` file is a search match: the user asked for that name by typing it,
+ * so it is shown at full strength even though it is cold and the camera is far
+ * out framing all the other matches -- the two conditions that would otherwise
+ * fade it away completely.
  */
-export function fileLabelOpacity(highlight: number, halfHeight: number): number {
+export function fileLabelOpacity(highlight: number, halfHeight: number, pinned = false): number {
+  if (pinned) return 1;
   const hot = clamp01(highlight);
   const revealed = smoothstep(
     FILE_LABEL_ZOOM_THRESHOLD,
@@ -192,22 +198,35 @@ function onScreen(candidate: LabelCandidate, viewport: LabelViewport): boolean {
  * past {@link FILE_LABEL_ZOOM_THRESHOLD}, the idle ones. Ties break on path so
  * the assignment is stable frame to frame; an unstable order would make labels
  * swap sprites and flicker.
+ *
+ * `pinned` holds the search matches. They skip the cold-plus-far cut and take
+ * the first slots, because a match the user typed out is worth more than a file
+ * that merely happens to be hot -- but they do not skip the culling (an
+ * off-screen name is invisible either way) nor the cap (a one-letter query
+ * matches most of the project, and the sprite pool does not grow).
  */
 export function selectFileLabels(
   candidates: readonly LabelCandidate[],
   viewport: LabelViewport,
   max = MAX_FILE_LABELS,
+  pinned?: ReadonlySet<string>,
 ): LabelCandidate[] {
   const zoomedIn = viewport.halfHeight <= FILE_LABEL_ZOOM_THRESHOLD;
+  const isPinned = (candidate: LabelCandidate): boolean => pinned?.has(candidate.path) ?? false;
   const eligible: LabelCandidate[] = [];
 
   for (const candidate of candidates) {
-    if (candidate.highlight <= HOT_HIGHLIGHT && !zoomedIn) continue;
+    if (candidate.highlight <= HOT_HIGHLIGHT && !zoomedIn && !isPinned(candidate)) continue;
     if (!onScreen(candidate, viewport)) continue;
     eligible.push(candidate);
   }
 
-  eligible.sort((a, b) => b.highlight - a.highlight || (a.path < b.path ? -1 : a.path > b.path ? 1 : 0));
+  eligible.sort(
+    (a, b) =>
+      Number(isPinned(b)) - Number(isPinned(a)) ||
+      b.highlight - a.highlight ||
+      (a.path < b.path ? -1 : a.path > b.path ? 1 : 0),
+  );
   return eligible.length > max ? eligible.slice(0, max) : eligible;
 }
 

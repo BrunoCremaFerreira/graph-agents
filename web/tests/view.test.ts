@@ -8,6 +8,15 @@
  * The property that matters for usability is zoom-under-cursor: the world point
  * beneath the pointer must not drift while zooming, otherwise the thing you are
  * trying to read slides off screen. Expected to FAIL until src/view.ts exists.
+ *
+ * A second defect motivates the `focusOn` group at the bottom. Search has to be
+ * able to fly the camera to a match, and `follow` cannot do it: `follow` is
+ * auto-fit, so it deliberately does nothing once `manual` is set -- which is
+ * exactly the state the camera is in after the user zoomed in to look for the
+ * file they are now searching for. Worse, easing there while leaving `manual`
+ * false would let the next frame's auto-fit drag the view straight back off the
+ * match. Focusing is a direct order from the user: it moves regardless, and it
+ * takes manual control on the way out.
  */
 
 import { describe, it, expect } from "vitest";
@@ -16,6 +25,7 @@ import {
   zoomAt,
   panByPixels,
   follow,
+  focusOn,
   releaseToAuto,
   MIN_HALF_HEIGHT,
   MAX_HALF_HEIGHT,
@@ -125,6 +135,60 @@ describe("follow", () => {
     const followed = follow(manual, TARGET, 0.5);
 
     expect(followed).toEqual(manual);
+  });
+});
+
+describe("focusOn", () => {
+  const TARGET = { centerX: 100, centerY: 100, halfHeight: 200 };
+
+  it("eases towards the target instead of cutting to it", () => {
+    const focused = focusOn(createView(100), TARGET, 0.5);
+
+    expect(focused.centerX).toBeCloseTo(50);
+    expect(focused.centerY).toBeCloseTo(50);
+    expect(focused.halfHeight).toBeCloseTo(150);
+  });
+
+  it("moves a manually positioned camera, because the user asked for this one", () => {
+    // The whole difference from `follow`: a search hit must reach the screen
+    // even though the user had already taken the camera over by hand.
+    const manual = zoomAt(createView(100), 0.5, { x: 0, y: 0 }, ASPECT);
+
+    const focused = focusOn(manual, TARGET, 0.5);
+
+    expect(focused.centerX).toBeCloseTo(50);
+  });
+
+  it("keeps manual control so auto-fit does not pull the camera back next frame", () => {
+    const auto = createView(100);
+
+    expect(focusOn(auto, TARGET, 0.5).manual).toBe(true);
+  });
+
+  it("arrives exactly on the target at full ease", () => {
+    const focused = focusOn(createView(100), TARGET, 1);
+
+    expect(focused.centerX).toBeCloseTo(TARGET.centerX);
+    expect(focused.centerY).toBeCloseTo(TARGET.centerY);
+    expect(focused.halfHeight).toBeCloseTo(TARGET.halfHeight);
+  });
+
+  it("refuses to close in past the minimum half-height", () => {
+    // A single matched file gives a target of nearly zero size; unclamped, the
+    // camera dives inside the bloom and the screen goes white.
+    const focused = focusOn(createView(100), { centerX: 0, centerY: 0, halfHeight: 0.01 }, 1);
+
+    expect(focused.halfHeight).toBeGreaterThanOrEqual(MIN_HALF_HEIGHT);
+  });
+
+  it("refuses to pull back past the maximum half-height", () => {
+    const focused = focusOn(
+      createView(100),
+      { centerX: 0, centerY: 0, halfHeight: MAX_HALF_HEIGHT * 10 },
+      1,
+    );
+
+    expect(focused.halfHeight).toBeLessThanOrEqual(MAX_HALF_HEIGHT);
   });
 });
 

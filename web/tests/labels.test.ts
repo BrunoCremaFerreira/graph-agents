@@ -33,6 +33,15 @@
  * one, shortened id otherwise, and nothing at all for an empty agent, which by
  * project rule never becomes an actor -- is pure string logic. It belongs here,
  * not behind a GL context.
+ *
+ * A fifth defect motivates the "pinned" argument in the two search groups at the
+ * very bottom: a search match must show its name, and every rule in this module
+ * is against it. A matched file is usually cold -- nobody just touched it, that
+ * is why it had to be searched for -- and the camera framing several matches at
+ * once sits far out, so the cold-plus-far cut in `selectFileLabels` and the fade
+ * in `fileLabelOpacity` erase exactly the names the user asked to see. Pinning
+ * overrides both, and only for the caller that asks for it: the argument is
+ * optional and every existing call must keep behaving as it does today.
  */
 
 import { describe, it, expect } from "vitest";
@@ -435,5 +444,88 @@ describe("actorDisplayName", () => {
         );
       }
     }
+  });
+});
+
+/** The camera framing the whole tree: too far out to name an idle file. */
+const FAR_VIEW = FILE_LABEL_ZOOM_THRESHOLD * 5;
+
+/** Close enough that idle files are named anyway. */
+const NEAR_VIEW = FILE_LABEL_ZOOM_THRESHOLD * 0.5;
+
+describe("selectFileLabels with pinned matches", () => {
+  it("names a pinned file that is cold with the camera far out", () => {
+    // The search defect in one line: without this, the match the user just
+    // asked for is the one node on screen guaranteed to stay anonymous.
+    const nodes = [candidate("src/wanted.ts", 0), candidate("src/other.ts", 0)];
+
+    const chosen = selectFileLabels(nodes, viewport(FAR_VIEW), MAX_FILE_LABELS, new Set(["src/wanted.ts"]));
+
+    expect(chosen.map((c) => c.path)).toEqual(["src/wanted.ts"]);
+  });
+
+  it("puts a pinned file ahead of a hotter unpinned one when slots run short", () => {
+    const nodes = [candidate("touched.ts", 1), candidate("match.ts", 0)];
+
+    const chosen = selectFileLabels(nodes, viewport(NEAR_VIEW), MAX_FILE_LABELS, new Set(["match.ts"]));
+
+    expect(chosen[0].path).toBe("match.ts");
+  });
+
+  it("still drops a pinned file that is off screen", () => {
+    // An invisible label costs a slot and buys nothing; the camera move is what
+    // brings an off-screen match into view, not the label.
+    const offscreen = candidate("far.ts", 0, 0, 5000);
+
+    expect(selectFileLabels([offscreen], viewport(50), MAX_FILE_LABELS, new Set(["far.ts"]))).toEqual(
+      [],
+    );
+  });
+
+  it("honours the cap even when everything on screen is pinned", () => {
+    // A one-letter query matches most of the project; the sprite pool does not
+    // grow to meet it.
+    const nodes = Array.from({ length: 10 }, (_, i) => candidate(`f${i}.ts`, 0));
+
+    const chosen = selectFileLabels(nodes, viewport(FAR_VIEW), 3, new Set(nodes.map((c) => c.path)));
+
+    expect(chosen).toHaveLength(3);
+  });
+
+  it("orders pinned files deterministically so search labels do not flicker", () => {
+    const nodes = [candidate("b.ts", 0), candidate("a.ts", 0), candidate("c.ts", 0)];
+    const pinned = new Set(["a.ts", "b.ts", "c.ts"]);
+
+    const first = selectFileLabels(nodes, viewport(FAR_VIEW), MAX_FILE_LABELS, pinned).map((c) => c.path);
+    const second = selectFileLabels([...nodes].reverse(), viewport(FAR_VIEW), MAX_FILE_LABELS, pinned).map(
+      (c) => c.path,
+    );
+
+    expect(first).toEqual(second);
+  });
+
+  it("changes nothing when no file is pinned", () => {
+    const nodes = [candidate("hot.ts", 1), candidate("cold.ts", 0), candidate("b.ts", 0.5)];
+    const view = viewport(NEAR_VIEW);
+
+    expect(selectFileLabels(nodes, view, MAX_FILE_LABELS, new Set())).toEqual(
+      selectFileLabels(nodes, view),
+    );
+  });
+});
+
+describe("fileLabelOpacity with a pinned match", () => {
+  const FAR = FILE_LABEL_ZOOM_THRESHOLD * 4;
+
+  it("shows a pinned name at full strength however cold and far it is", () => {
+    expect(fileLabelOpacity(0, FAR, true)).toBe(1);
+  });
+
+  it("shows a pinned name at full strength up close too, without exceeding 1", () => {
+    expect(fileLabelOpacity(1, FILE_LABEL_ZOOM_THRESHOLD * 0.25, true)).toBe(1);
+  });
+
+  it("leaves an unpinned file faded exactly as before", () => {
+    expect(fileLabelOpacity(0, FAR, false)).toBe(fileLabelOpacity(0, FAR));
   });
 });

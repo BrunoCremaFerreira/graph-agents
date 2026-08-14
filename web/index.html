@@ -12,11 +12,23 @@
       <div id="attribution" hidden></div>
       <div class="about">
         graph-agents · Gource-style live view
-        <span class="keys">scroll: zoom · drag: pan · double-click: auto-fit</span>
+        <span class="keys">
+          scroll: zoom · drag: pan · double-click: auto-fit · ctrl+F: search · F3: next
+        </span>
       </div>
     </div>
     <div id="context">
       <span id="context-root"></span><span id="context-branch" hidden></span>
+    </div>
+    <div id="search" hidden>
+      <input
+        id="search-input"
+        type="text"
+        autocomplete="off"
+        spellcheck="false"
+        placeholder="search file or folder"
+      />
+      <span id="search-count"></span>
     </div>
     <script type="module" src="/src/main.ts"></script>
   </body>

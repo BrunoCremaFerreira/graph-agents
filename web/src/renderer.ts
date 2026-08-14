@@ -46,12 +46,15 @@ import {
 } from "./geometry";
 import {
   createView,
+  focusOn,
   follow,
   panByPixels,
   releaseToAuto,
   zoomAt,
   type ViewState,
 } from "./view";
+import { frameMatches, type SearchFrame } from "./search";
+import { createSearchMarkerCanvas } from "./searchMarker";
 import {
   fileLabelOpacity,
   labelFontPixels,
@@ -106,6 +109,32 @@ const BEAM_LIFE_SECONDS = 1.2;
 const DIR_COLOR = 0x9aa0a6;
 /** Height of the agent figure in world units (a file dot is a few px wide). */
 const AVATAR_WORLD_HEIGHT = 7;
+
+/**
+ * Colour of a node the search matched.
+ *
+ * Cyan is the one hue left free: `A` is green, `M` orange, `D` red and a
+ * directory grey, so a match cannot be mistaken for a file that merely happens
+ * to have just been written.
+ */
+const SEARCH_COLOR = 0x00e5ff;
+/** Extra point size, in device pixels, given to any match. */
+const SEARCH_SIZE_BOOST = 4;
+/** Extra point size, in device pixels, given to the one match F3 is on. */
+const SEARCH_ACTIVE_SIZE_BOOST = 8;
+/** Radians per second of the active match's pulse, and its depth. */
+const SEARCH_PULSE_RATE = 6;
+const SEARCH_PULSE_DEPTH = 0.18;
+/**
+ * Diameter of the active-match ring, in DEVICE pixels.
+ *
+ * In pixels, not world units, for the reason labels.ts documents: the camera
+ * spans halfHeight 2..4000, so anything sized in world units is either
+ * sub-pixel with the tree framed or covers the screen up close.
+ */
+const SEARCH_MARKER_PIXELS = 44;
+/** How fast the camera eases onto what the search asked it to show. */
+const SEARCH_FOCUS_EASE = 0.12;
 
 /** Per-point shader: per-vertex size (px) + color, soft circular alpha. */
 const POINT_VERTEX = /* glsl */ `
@@ -175,8 +204,32 @@ export class GourceRenderer {
   private readonly chosenByPath = new Map<string, LabelCandidate>();
   private readonly beams: Beam[] = [];
 
+  /**
+   * What the search box is currently pointing at. Held as a Set because
+   * `updateNodeAttributes` asks "is this one a match?" once per node per frame.
+   * The renderer owns no domain state: this is a copy of what `main.ts` handed
+   * it, kept only so each frame can paint it.
+   */
+  private readonly searchMatches = new Set<string>();
+  private searchActivePath: string | null = null;
+  private searchFrame: SearchFrame = "all";
+  /**
+   * Whether the camera is still obeying the search.
+   *
+   * A wheel or a drag disarms it -- the user is looking around and must not be
+   * dragged back -- without clearing the highlights, which are still the answer
+   * to their question. The next `setSearch` (a new query, or F3) rearms.
+   */
+  private searchArmed = false;
+  /** The active match's ring, in the MAIN scene: unlike text, it should glow. */
+  private readonly searchMarker: Sprite;
+  /** Scratch for the camera frame; refilled in place, never reallocated. */
+  private readonly framePoints: { x: number; y: number }[] = [];
+
   private view: ViewState = createView(60);
   private lastTime = 0;
+  /** Seconds since start, for effects that pulse. */
+  private elapsed = 0;
   private running = false;
   private readonly scratchColor = new Color();
 
@@ -253,6 +306,11 @@ export class GourceRenderer {
       this.fileLabels.push({ sprite, path: "" });
     }
 
+    this.searchMarker = makeSearchMarker();
+    this.searchMarker.visible = false;
+    // Main scene, not `overlayScene`: the ring is meant to bloom.
+    this.scene.add(this.searchMarker);
+
     this.bindInput();
     this.resize();
   }
@@ -269,6 +327,9 @@ export class GourceRenderer {
         event.preventDefault();
         // One notch ~= 10%; trackpads send many small deltas, so scale by size.
         const factor = Math.exp(event.deltaY * 0.0015);
+        // Touching the camera takes it back from the search, highlights and all
+        // still showing.
+        this.searchArmed = false;
         this.view = zoomAt(this.view, factor, this.pointerNdc(event), this.aspect());
         this.syncCamera();
       },
@@ -289,6 +350,7 @@ export class GourceRenderer {
       const dy = event.clientY - this.dragY;
       this.dragX = event.clientX;
       this.dragY = event.clientY;
+      this.searchArmed = false;
       this.view = panByPixels(this.view, dx, dy, {
         width: this.canvas.clientWidth || window.innerWidth,
         height: this.canvas.clientHeight || window.innerHeight,
@@ -347,6 +409,33 @@ export class GourceRenderer {
     }
   }
 
+  /**
+   * Show what the search found: highlight `matches`, ring `active`, and take
+   * the camera over again (`frame` says whether to fit them all or approach the
+   * active one).
+   *
+   * Every call rearms the camera, so a new query or an F3 wins back a view the
+   * user had grabbed with the wheel.
+   */
+  setSearch(matches: readonly string[], active: string | null, frame: SearchFrame): void {
+    this.searchMatches.clear();
+    for (const path of matches) this.searchMatches.add(path);
+    this.searchActivePath = active;
+    this.searchFrame = frame;
+    // A query matching nothing leaves the camera where the user left it: there
+    // is nothing to frame, and yanking it to the origin would lose their place.
+    this.searchArmed = this.searchMatches.size > 0;
+  }
+
+  /** Drop every highlight and hand the camera back to the automatic fit. */
+  clearSearch(): void {
+    this.searchMatches.clear();
+    this.searchActivePath = null;
+    this.searchArmed = false;
+    this.searchMarker.visible = false;
+    this.view = releaseToAuto(this.view);
+  }
+
   /** Start the render loop. */
   start(): void {
     if (this.running) return;
@@ -395,6 +484,7 @@ export class GourceRenderer {
   }
 
   private frame(dt: number): void {
+    this.elapsed += dt;
     this.sim.tick(dt);
 
     const model = this.sim.listNodes();
@@ -411,6 +501,8 @@ export class GourceRenderer {
     // positioned from the layout that moved this frame. Doing this only on
     // topology changes is what left directory names stranded behind their nodes.
     this.updateLabels(model);
+    // After the labels: the ring is sized from the same per-frame metrics.
+    this.updateSearchMarker();
 
     this.composer.render();
     // Text goes on top of the finished image, never through the bloom: keeping
@@ -471,7 +563,21 @@ export class GourceRenderer {
       posArr[idx * 3 + 1] = y;
       posArr[idx * 3 + 2] = 0;
 
-      if (node.kind === "dir") {
+      // A match is painted by the search, not by its own kind: full colour (no
+      // idle fade -- the user asked for this node by name, so it must be
+      // visible however cold it is) and a few pixels more, with the active one
+      // larger still and pulsing so it reads apart from its siblings.
+      const matched = this.searchMatches.size > 0 && this.searchMatches.has(node.path);
+      if (matched) {
+        const active = node.path === this.searchActivePath;
+        const pulse = active
+          ? 1 + SEARCH_PULSE_DEPTH * Math.sin(this.elapsed * SEARCH_PULSE_RATE)
+          : 1;
+        const base = node.kind === "dir" ? 3.5 : 6;
+        const boost = active ? SEARCH_ACTIVE_SIZE_BOOST : SEARCH_SIZE_BOOST;
+        this.scratchColor.setHex(SEARCH_COLOR);
+        sizeArr[idx] = (base + boost) * pulse * dpr;
+      } else if (node.kind === "dir") {
         this.scratchColor.setHex(DIR_COLOR).multiplyScalar(0.5);
         sizeArr[idx] = 3.5 * dpr;
       } else {
@@ -567,6 +673,9 @@ export class GourceRenderer {
   }
 
   private updateCamera(model: readonly SimNode[]): void {
+    // The search outranks the automatic fit while it holds the camera.
+    if (this.updateSearchCamera()) return;
+
     let minX = Infinity;
     let minY = Infinity;
     let maxX = -Infinity;
@@ -592,6 +701,74 @@ export class GourceRenderer {
       0.05,
     );
     this.syncCamera();
+  }
+
+  /**
+   * Ease the camera onto what the search is pointing at, if anything.
+   *
+   * The target is recomputed EVERY FRAME from the live layout, not once when
+   * the query changed: the force layout keeps moving the nodes, so a frame
+   * chosen once slides its matches off the screen within a second.
+   *
+   * @returns whether the search took the camera this frame.
+   */
+  private updateSearchCamera(): boolean {
+    if (!this.searchArmed || this.searchMatches.size === 0) return false;
+
+    const points = this.framePoints;
+    let count = 0;
+    const add = (p: { x: number; y: number }): void => {
+      let slot = points[count];
+      if (!slot) {
+        slot = { x: 0, y: 0 };
+        points.push(slot);
+      }
+      slot.x = p.x;
+      slot.y = p.y;
+      count += 1;
+    };
+
+    if (this.searchFrame === "active") {
+      const p = this.searchActivePath ? this.layout.position(this.searchActivePath) : undefined;
+      if (p) add(p);
+    } else {
+      for (const path of this.searchMatches) {
+        const p = this.layout.position(path);
+        if (p) add(p);
+      }
+    }
+    points.length = count;
+
+    const target = frameMatches(points, this.aspect());
+    // Matches with no position yet (the layout has not placed them): leave the
+    // camera alone this frame rather than jumping it to the origin.
+    if (!target) return false;
+
+    // `focusOn`, not `follow`: the user is usually already `manual` by the time
+    // they give up looking and type a name.
+    this.view = focusOn(this.view, target, SEARCH_FOCUS_EASE);
+    this.syncCamera();
+    return true;
+  }
+
+  /**
+   * Put the ring on the active match, at a constant size in pixels.
+   *
+   * Sized from the per-frame `worldPerPixel` for the same reason labels are:
+   * a world-sized ring is invisible with the project framed and fills the
+   * screen on a single file.
+   */
+  private updateSearchMarker(): void {
+    const path = this.searchActivePath;
+    const p = path && this.searchMatches.has(path) ? this.layout.position(path) : undefined;
+    if (!p) {
+      this.searchMarker.visible = false;
+      return;
+    }
+    const size = this.labelMetrics.worldPerPixel * SEARCH_MARKER_PIXELS;
+    this.searchMarker.visible = true;
+    this.searchMarker.position.set(p.x, p.y, 1);
+    this.searchMarker.scale.set(size, size, 1);
   }
 
   /** Copy the view state onto the camera. */
@@ -725,6 +902,7 @@ export class GourceRenderer {
       }
       sprite.visible = true;
       this.placeLabel(sprite, p.x, p.y + metrics.offset, 1);
+      this.tintDirLabel(sprite, this.searchMatches.has(path));
     }
 
     for (const actor of this.actors.values()) {
@@ -749,6 +927,23 @@ export class GourceRenderer {
       z,
     );
     sizeLabel(sprite, em);
+  }
+
+  /**
+   * Tint a directory's name when the search matched it, and put it back when it
+   * stops matching.
+   *
+   * The texture is baked in grey, so the match colour is applied through
+   * `material.color` (a multiply) rather than by repainting a canvas every time
+   * the query changes. The flag on `userData` is what keeps this a no-op on the
+   * frames where nothing changed.
+   */
+  private tintDirLabel(sprite: Sprite, matched: boolean): void {
+    if (sprite.userData.searchHit === matched) return;
+    sprite.userData.searchHit = matched;
+    const material = sprite.material as SpriteMaterial;
+    material.color.setHex(matched ? SEARCH_COLOR : 0xffffff);
+    material.opacity = matched ? 1 : 0.9;
   }
 
   /** Hand the sprite pool to the files that earned a name this frame. */
@@ -781,6 +976,9 @@ export class GourceRenderer {
         aspect: this.aspect(),
       },
       this.fileLabels.length,
+      // A match keeps its name even when it is cold and the camera is far out
+      // framing all the others -- the two conditions that would hide it.
+      this.searchMatches,
     );
 
     // Slots are assigned by identity, not by rank. Handing slot `i` to the i-th
@@ -819,6 +1017,7 @@ export class GourceRenderer {
     (slot.sprite.material as SpriteMaterial).opacity = fileLabelOpacity(
       pick.highlight,
       this.view.halfHeight,
+      this.searchMatches.has(pick.path),
     );
   }
 
@@ -933,6 +1132,24 @@ function makeAvatar(color: number): Sprite {
   const sprite = new Sprite(material);
   sprite.scale.set(AVATAR_WORLD_HEIGHT, AVATAR_WORLD_HEIGHT, 1);
   return sprite;
+}
+
+/**
+ * Sprite carrying the ring drawn around the active match.
+ *
+ * Built once and rescaled every frame, like every other pixel-sized thing here.
+ */
+function makeSearchMarker(): Sprite {
+  const texture = new CanvasTexture(createSearchMarkerCanvas(SEARCH_COLOR));
+  // A 2D canvas hands us sRGB texels; left linear the ring's antialiased edge
+  // shifts gamma and thickens.
+  texture.colorSpace = SRGBColorSpace;
+  texture.minFilter = LinearFilter;
+  texture.magFilter = LinearFilter;
+  texture.generateMipmaps = false;
+  return new Sprite(
+    new SpriteMaterial({ map: texture, transparent: true, depthTest: false }),
+  );
 }
 
 /** Factory that keeps construction details out of `main.ts`. */

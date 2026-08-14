@@ -99,7 +99,9 @@ config/settings.json      # hooks to install into a target project's .claude/
 web/src/avatar.ts         # the agent figure, painted on a canvas
 web/src/eventLog.ts       # pure: the recent-changes list model (drops seed, folds repeats)
 web/src/attribution.ts    # pure: has any attributed event arrived? (latch, never unlatches)
-web/src/*Hud.ts           # thin DOM painters: context caption, event list, attribution note
+web/src/search.ts         # pure: match, the walk over matches, and the camera frame for them
+web/src/searchKeys.ts     # pure: what ctrl+F / F3 / Esc mean
+web/src/*Hud.ts           # thin DOM painters: context caption, event list, attribution, search box
 run.sh / start.sh         # minimal launcher / full bootstrap
 ```
 
@@ -164,7 +166,7 @@ Web MVP implemented and verified end-to-end (TDD).
   a Unix socket, watches the filesystem, and serves `web/dist` over HTTP **and** broadcasts
   events over WebSocket (`/ws`) on a single port (`:8080`) — one forwarded port is enough for
   remote/SSH use, and the browser derives the socket URL from its own origin.
-- **Frontend** (`web/`): 279/279 vitest green, `tsc` + `vite build` clean. Gource-style WebGL
+- **Frontend** (`web/`): 368/368 vitest green, `tsc` + `vite build` clean. Gource-style WebGL
   renderer (three.js force layout + `UnrealBloomPass` + per-agent figure and beams), pure
   `simulation.ts` model, typed `parseEvent`, auto-reconnecting `wsClient.ts`. Label placement
   lives in pure `labels.ts` (like `view.ts`) because `renderer.ts` needs a GL context and
@@ -174,6 +176,19 @@ Web MVP implemented and verified end-to-end (TDD).
   at a 48-sprite pool whose slots stay bound to a path so a new event does not repaint every
   canvas. `updateLabels` runs **every frame**: positioning labels only on topology change
   left them stranded while the force layout kept moving the nodes.
+- **Search (`ctrl+F`)** follows the same split: every decision is pure and tested —
+  `search.ts` (substring match on the file name, or on the whole path once the query
+  contains `/`; the walk `F3` takes over the matches; and `frameMatches`, which returns the
+  camera target: one match is approached at `SEARCH_FOCUS_HALF_HEIGHT`, several are framed
+  together with a margin) and `searchKeys.ts` (what a keystroke means). The renderer only
+  paints: cyan nodes, a ring on the active one, and `focusOn` — the one camera transform
+  that ignores `manual`, because a search is a direct order. Two things are load-bearing:
+  the camera target is recomputed **every frame** from live positions (the force layout
+  never stops moving, so a frame chosen once slides its matches off screen), and a live
+  tree needs `refreshMatches`, not `setQuery`, to fold new events into an open search —
+  `setQuery` restarts the walk by contract, which would throw an `F3` walk back to the
+  overview every time a file was written. Touching the wheel disarms the camera without
+  dropping the highlights; the next query or `F3` rearms it.
 - **Text is not part of the glow.** Labels live in a separate `overlayScene`, drawn after
   the composer with `autoClear = false`. Every glyph pixel clears the bloom's 0.05
   threshold, so a label left in the main scene gets an additive halo that closes the

@@ -109,6 +109,27 @@ export function follow(view: ViewState, target: ViewTarget, ease: number): ViewS
   };
 }
 
+/**
+ * Ease towards a target the user asked for, whatever `manual` says.
+ *
+ * The opposite of {@link follow} on both counts, and deliberately so. Focusing
+ * is a direct order -- a search hit, say -- and the camera is usually already
+ * `manual` by then, because the user had been driving it around looking for the
+ * very thing they gave up and searched for; obeying `manual` here would mean the
+ * match never arrives. Setting `manual` on the way out is the other half: left
+ * false, the next frame's auto-fit would drag the view straight back off it.
+ */
+export function focusOn(view: ViewState, target: ViewTarget, ease: number): ViewState {
+  return {
+    centerX: view.centerX + (target.centerX - view.centerX) * ease,
+    centerY: view.centerY + (target.centerY - view.centerY) * ease,
+    // A single matched file gives a target of nearly zero size; unclamped, the
+    // camera closes in until the bloom whites the screen out.
+    halfHeight: clampHalfHeight(view.halfHeight + (target.halfHeight - view.halfHeight) * ease),
+    manual: true,
+  };
+}
+
 /** Resume auto-fit from wherever the camera currently sits. */
 export function releaseToAuto(view: ViewState): ViewState {
   return { ...view, manual: false };

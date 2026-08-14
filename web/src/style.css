@@ -201,3 +201,86 @@ body {
   color: #5c6067;
   white-space: nowrap;
 }
+
+/*
+ * Observed-root bar (ctrl+L), top centre — the address bar for the project
+ * being watched. Same skin as #search, and `pointer-events: auto` is required
+ * for the same reason: it is typed into.
+ *
+ * The vertical offset is not cosmetic. This is the box that GROWS — a candidate
+ * line and an error line appear under the field — so it sits below the search
+ * box's fixed-height row instead of sharing it. That is what keeps the two from
+ * ever overlapping, whatever is typed and whichever of them is open.
+ */
+#root-bar {
+  position: fixed;
+  top: 56px;
+  left: 50%;
+  transform: translateX(-50%);
+  width: min(720px, 80vw);
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  padding: 6px 10px;
+  border: 1px solid #2a2e34;
+  border-radius: 6px;
+  background: rgba(12, 13, 15, 0.82);
+  color: #d5d9df;
+  font: 12px/1.4 system-ui, sans-serif;
+  pointer-events: auto;
+}
+
+/*
+ * The `display: flex` above would otherwise override the `hidden` attribute and
+ * leave the bar on screen for good — the same trap as #context-branch and
+ * #search. The two lines below repeat it for the rows inside.
+ */
+#root-bar[hidden] {
+  display: none;
+}
+
+#root-bar .row {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+}
+
+#root-bar .prompt {
+  flex: 0 0 auto;
+  color: #5c6067;
+  user-select: none;
+}
+
+#root-bar #root-input {
+  flex: 1 1 auto;
+  min-width: 0;
+  margin: 0;
+  padding: 0;
+  border: none;
+  outline: none;
+  background: transparent;
+  color: inherit;
+  font: inherit;
+}
+
+#root-bar #root-input::placeholder {
+  color: #5c6067;
+}
+
+/* Candidates on one line: a folder with hundreds of children must not push the
+ * bar over the graph, and the pool of shown names is capped in rootHud.ts. */
+#root-bar #root-matches {
+  color: #b3b8c1;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+#root-bar #root-error {
+  color: #d98b8b;
+}
+
+#root-bar #root-matches[hidden],
+#root-bar #root-error[hidden] {
+  display: none;
+}

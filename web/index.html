@@ -13,7 +13,8 @@
       <div class="about">
         graph-agents · Gource-style live view
         <span class="keys">
-          scroll: zoom · drag: pan · double-click: auto-fit · ctrl+F: search · F3: next
+          scroll: zoom · drag: pan · double-click: auto-fit · ctrl+F: search · F3: next ·
+          ctrl+L: root
         </span>
       </div>
     </div>
@@ -29,6 +30,20 @@
         placeholder="search file or folder"
       />
       <span id="search-count"></span>
+    </div>
+    <div id="root-bar" hidden>
+      <div class="row">
+        <span class="prompt">root</span>
+        <input
+          id="root-input"
+          type="text"
+          autocomplete="off"
+          spellcheck="false"
+          placeholder="directory to observe"
+        />
+      </div>
+      <div id="root-matches" hidden></div>
+      <div id="root-error" hidden></div>
     </div>
     <script type="module" src="/src/main.ts"></script>
   </body>

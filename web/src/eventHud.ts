@@ -42,6 +42,11 @@ export interface EventHud {
    * on an idle page.
    */
   hasEntries(): boolean;
+  /**
+   * Empty the list and the log behind it, because the daemon switched roots.
+   * The entries name files of a project that is no longer on screen.
+   */
+  clear(): void;
 }
 
 /** Build the `<li>` for an entry: glyph, dimmed directory, file name, count. */
@@ -114,6 +119,14 @@ export function createEventHud(listEl: HTMLElement, max?: number): EventHud {
 
     hasEntries(): boolean {
       return log.entries().length > 0;
+    },
+
+    clear(): void {
+      log.reset();
+      listEl.replaceChildren();
+      // The next insertion is at the top of an empty list, so the anchoring
+      // above must not add the old scroll offset back onto it.
+      listEl.scrollTop = 0;
     },
   };
 }

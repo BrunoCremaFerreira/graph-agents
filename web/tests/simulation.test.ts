@@ -72,3 +72,56 @@ describe("simulation model", () => {
     expect(after).toBeLessThan(before);
   });
 });
+
+/**
+ * The observed root is about to become switchable from the page (ctrl+L). When
+ * it changes the daemon sends a `reset` frame and then re-seeds the whole new
+ * tree -- so the model has to be emptied first. Without this the two projects
+ * are drawn as one graph: the old files never disappear (nothing deletes them),
+ * they hang off directories the new root does not have, and the figures of
+ * agents that worked in the old checkout keep standing there. Reset is also the
+ * only way to forget a path, which matters because a path already in the tree is
+ * refreshed rather than created, and a file with the same relative path in the
+ * new project must enter as a new node.
+ */
+describe("simulation reset", () => {
+  it("empties the tree, so nothing from the old project is left on screen", () => {
+    const sim = createSimulation();
+    sim.applyEvent(event("A", "src/api/users.ts"));
+    sim.applyEvent(event("A", "README.md"));
+
+    sim.reset();
+
+    expect(sim.listNodes()).toEqual([]);
+  });
+
+  it("forgets every actor, so a figure from the old project stops posing", () => {
+    const sim = createSimulation();
+    sim.applyEvent(event("M", "a.ts", "worker-7"));
+
+    sim.reset();
+
+    expect(sim.listActors()).toEqual([]);
+  });
+
+  it("rebuilds a path it had already seen instead of treating it as still known", () => {
+    // Same relative path, different project: it has to be created from scratch,
+    // ancestors included, not refreshed in place from the old tree.
+    const sim = createSimulation();
+    sim.applyEvent(event("A", "src/api/users.ts"));
+    sim.reset();
+
+    sim.applyEvent(event("A", "src/api/users.ts"));
+
+    expect(sim.getNode("src/api/users.ts")?.kind).toBe("file");
+    expect(sim.getNode("src/api")?.kind).toBe("dir");
+  });
+
+  it("is harmless on a simulation that has seen nothing yet", () => {
+    // The page may reset before the first frame arrives (a switch requested
+    // while the socket was reconnecting).
+    const sim = createSimulation();
+
+    expect(() => sim.reset()).not.toThrow();
+  });
+});

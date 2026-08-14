@@ -217,6 +217,58 @@ describe("attribution monitor: monotonicity", () => {
   });
 });
 
+/**
+ * Monotonicity holds WITHIN one observed project, and ctrl+L now switches the
+ * project under the page's feet. The latch answers "are the capture hooks
+ * installed HERE?", and the answer is a property of the checkout: hooks live in
+ * the observed project's own `.claude/settings.json`, so proof gathered while
+ * watching this repository says nothing about the next one. Carrying the latch
+ * across a `reset` would suppress the warning in exactly the project that needs
+ * it -- a fresh checkout with no hooks, whose tree updates with nobody on
+ * camera, which is the ambiguity this module exists to end.
+ *
+ * Reset is the ONLY way the latch goes back off; no event may do it.
+ */
+describe("attribution monitor: reset", () => {
+  it("unlatches, because the new project has its own hooks or lack of them", () => {
+    const monitor = createAttributionMonitor();
+    monitor.observe(event("M", "src/app.py", { agent: "sess-1" }));
+
+    monitor.reset();
+
+    expect(monitor.attributed()).toBe(false);
+  });
+
+  it("latches again on the first attributed event of the new project", () => {
+    const monitor = createAttributionMonitor();
+    monitor.observe(event("M", "src/app.py", { agent: "sess-1" }));
+    monitor.reset();
+
+    monitor.observe(event("M", "other/app.py", { agent: "sess-2", origin: "watch" }));
+
+    expect(monitor.attributed()).toBe(true);
+  });
+
+  it("stays off after a reset when the new project only sends unattributed changes", () => {
+    // The whole point: a tree that updates with `agent: ""` in the new checkout
+    // has to relight the "hooks are not installed" warning.
+    const monitor = createAttributionMonitor();
+    monitor.observe(event("M", "src/app.py", { agent: "sess-1" }));
+    monitor.reset();
+
+    monitor.observe(event("A", "other/seeded.py", { agent: "", origin: "seed" }));
+    monitor.observe(event("M", "other/hand-edit.md", { agent: "", origin: "watch" }));
+
+    expect(monitor.attributed()).toBe(false);
+  });
+
+  it("is harmless on a monitor that has proven nothing yet", () => {
+    const monitor = createAttributionMonitor();
+
+    expect(() => monitor.reset()).not.toThrow();
+  });
+});
+
 describe("attribution monitor: a realistic session", () => {
   it("flips exactly once, on the first attributed event of the stream", () => {
     const monitor = createAttributionMonitor();

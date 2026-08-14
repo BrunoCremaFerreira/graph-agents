@@ -15,6 +15,17 @@ import { createAttributionMonitor } from "./attribution";
 import { createAttributionHud } from "./attributionHud";
 import { createSearchHud } from "./searchHud";
 import { interpretSearchKey } from "./searchKeys";
+import { createRootHud } from "./rootHud";
+import { interpretRootKey } from "./rootKeys";
+import {
+  applyCompletion,
+  cancelPrompt,
+  createRootPrompt,
+  failPrompt,
+  openPrompt,
+  setText,
+  type RootPromptState,
+} from "./rootPrompt";
 import {
   activePath,
   closeSearch,
@@ -41,6 +52,8 @@ function boot(): void {
   const attribution = createAttributionMonitor();
   const searchEl = document.getElementById("search");
   const searchHud = searchEl ? createSearchHud(searchEl) : null;
+  const rootEl = document.getElementById("root-bar");
+  const rootHud = rootEl ? createRootHud(rootEl) : null;
 
   // The search's whole state machine is in `search.ts`; this is just the one
   // variable holding the state it returns, and the wiring that shows it.
@@ -57,6 +70,23 @@ function boot(): void {
     renderer.setSearch(search.matches, activePath(search), search.frame);
   }
 
+  // Same shape for the root bar: the state machine is `rootPrompt.ts`, this is
+  // the variable holding what it returns plus the wiring that paints it.
+  let rootPrompt: RootPromptState = createRootPrompt();
+  /** The observed root, as of the last meta frame; what ctrl+L prefills. */
+  let observedRoot = "";
+
+  function showRoot(next: RootPromptState): void {
+    rootPrompt = next;
+    if (!rootPrompt.open) {
+      rootHud?.close();
+      return;
+    }
+    rootHud?.setText(rootPrompt.text);
+    rootHud?.setMatches(rootPrompt.matches);
+    rootHud?.setError(rootPrompt.error);
+  }
+
   const client = createWsClient(
     (event) => {
       sim.applyEvent(event);
@@ -71,12 +101,62 @@ function boot(): void {
       if (search.open && search.query) showSearch(refreshMatches(search, sim.listNodes()));
     },
     resolveWsUrl(),
-    { onMeta: (meta) => contextHud?.setMeta(meta) },
+    {
+      onMeta: (meta) => {
+        observedRoot = meta.root;
+        contextHud?.setMeta(meta);
+      },
+      // The daemon answered a Tab. `applyCompletion` decides whether the answer
+      // is still the one being waited for -- it travelled the network while the
+      // user kept typing -- so nothing here inspects it.
+      onCompletion: (completion) => showRoot(applyCompletion(rootPrompt, completion)),
+      // A refused path keeps the bar open with the text still in it, so the typo
+      // can be fixed; that rule is `failPrompt`'s, not this handler's.
+      onRootError: (error) => showRoot(failPrompt(rootPrompt, error.reason)),
+      onReset: () => {
+        // The root changed: everything on screen belongs to the old project and
+        // the new tree is already on its way.
+        sim.reset();
+        renderer.resetScene();
+        eventHud?.clear();
+        attribution.reset();
+        attributionHud?.update(false, false);
+        // Only now does the bar close: the switch is confirmed, not merely sent.
+        showRoot(cancelPrompt(rootPrompt));
+      },
+    },
   );
 
   searchHud?.onQueryChange((query) => showSearch(setQuery(search, query, sim.listNodes())));
+  rootHud?.onTextChange((text) => showRoot(setText(rootPrompt, text)));
 
   window.addEventListener("keydown", (event) => {
+    // The root bar goes first, and an answered key never reaches the search: an
+    // open bar owns Enter and Escape, which the search box also answers.
+    const rootCommand = interpretRootKey(event, rootPrompt.open);
+    if (rootCommand) {
+      // Without this the browser takes all three back: ctrl+L focuses its own
+      // address bar, Tab moves focus out of the field, and Enter submits.
+      event.preventDefault();
+      if (rootCommand === "open") {
+        // Already open: ctrl+L only refocuses and selects, as in the search box.
+        // Reopening over a half-typed path would throw it away.
+        if (!rootPrompt.open) showRoot(openPrompt(rootPrompt, observedRoot));
+        rootHud?.open();
+      } else if (rootCommand === "complete") {
+        // The browser cannot read the disk, so Tab is a round trip; the reply
+        // comes back through `onCompletion`.
+        client.send({ kind: "complete", path: rootHud?.text() ?? rootPrompt.text });
+      } else if (rootCommand === "submit") {
+        // The bar stays open until the daemon confirms with a `reset` frame, or
+        // refuses with a `rootError`.
+        client.send({ kind: "setRoot", path: rootHud?.text() ?? rootPrompt.text });
+      } else {
+        showRoot(cancelPrompt(rootPrompt));
+      }
+      return;
+    }
+
     const command = interpretSearchKey(event, search.open);
     if (!command) return;
     // ctrl+F would otherwise open the browser's own find bar, and F3 its

@@ -48,6 +48,19 @@ export interface Simulation {
   applyEvent(event: AgentEvent): void;
   /** Advance time by `dtSeconds`, decaying idle actors (and node highlights). */
   tick(dtSeconds: number): void;
+  /**
+   * Forget everything: the whole tree AND every actor.
+   *
+   * The observed root can be switched from the page, and the daemon answers by
+   * re-seeding a different project. Without this the two are drawn as one graph:
+   * the old files never disappear (nothing deletes them), they hang off
+   * directories the new root does not have, and figures of agents that worked in
+   * the old checkout keep standing there. It is also the only way to forget a
+   * path, which matters because a known path is REFRESHED rather than created —
+   * a file with the same relative name in the new project has to enter as a new
+   * node, ancestors included.
+   */
+  reset(): void;
 
   /** Whether a node exists at `path`. */
   hasNode(path: string): boolean;
@@ -128,6 +141,11 @@ class SimulationImpl implements Simulation {
       node.highlight = clamp01(node.highlight - HIGHLIGHT_DECAY_PER_SEC * dtSeconds);
       node.opacity = clamp01(node.opacity - FILE_OPACITY_DECAY_PER_SEC * dtSeconds);
     }
+  }
+
+  reset(): void {
+    this.nodes.clear();
+    this.actors.clear();
   }
 
   hasNode(path: string): boolean {

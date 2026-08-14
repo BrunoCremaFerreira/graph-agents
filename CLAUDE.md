@@ -92,6 +92,7 @@ it causes.
 graphagents/normalize.py  # pure: hook JSON → Event; also actor_of / seed_event / fs_event
 graphagents/tree.py       # boot snapshot of the observed project
 graphagents/repo.py       # pure: reads .git/HEAD for the branch (never shells out to git)
+graphagents/paths.py      # pure: resolve a typed root, and complete a directory like a shell
 hooks/emit_event.py       # hook entrypoint: JSON in → daemon socket
 daemon/server.py          # EventHub: seed, attribution, dedupe, meta, WebSocket + HTTP
 daemon/watcher.py         # inotify watcher (watchdog)
@@ -100,6 +101,7 @@ web/src/avatar.ts         # the agent figure, painted on a canvas
 web/src/eventLog.ts       # pure: the recent-changes list model (drops seed, folds repeats)
 web/src/attribution.ts    # pure: has any attributed event arrived? (latch, never unlatches)
 web/src/search.ts         # pure: match, the walk over matches, and the camera frame for them
+web/src/rootPrompt.ts     # pure: the ctrl+L bar's state (text, completion, discard on Esc)
 web/src/searchKeys.ts     # pure: what ctrl+F / F3 / Esc mean
 web/src/*Hud.ts           # thin DOM painters: context caption, event list, attribution, search box
 run.sh / start.sh         # minimal launcher / full bootstrap
@@ -161,12 +163,27 @@ asking the tester for the RED tests, not by asking a developer to implement blin
 
 Web MVP implemented and verified end-to-end (TDD).
 
-- **Backend** (`graphagents/`, `hooks/`, `daemon/`): 182/182 pytest green. Hook is stdlib-only
+- **Backend** (`graphagents/`, `hooks/`, `daemon/`): 273/273 pytest green. Hook is stdlib-only
   and exits 0 on garbage input. Daemon seeds the project tree at boot, ingests hook events on
   a Unix socket, watches the filesystem, and serves `web/dist` over HTTP **and** broadcasts
   events over WebSocket (`/ws`) on a single port (`:8080`) — one forwarded port is enough for
   remote/SSH use, and the browser derives the socket URL from its own origin.
-- **Frontend** (`web/`): 368/368 vitest green, `tsc` + `vite build` clean. Gource-style WebGL
+- **The observed root is no longer a boot constant.** `ctrl+L` in the page opens a bar that
+  swaps it: the WebSocket, once broadcast-only, now also accepts `{"kind":"complete"}` (the
+  browser cannot read the disk, so the daemon answers tab-completion) and
+  `{"kind":"setRoot"}`. `Session.switch_root` stops the watcher, calls `EventHub.reset` —
+  which clears `known_paths`, the seed and the replay, and broadcasts a `reset` frame the
+  clients wipe their graph on — re-seeds, and restarts the watcher on the new root. Two
+  details are load-bearing: `reset` sits FIRST in `replay_messages()`, so a client connecting
+  mid-switch clears before it is handed the new tree; and `scan_tree` runs through
+  `asyncio.to_thread`, because a root like `~` would otherwise block the event loop for
+  seconds and freeze every viewer. The branch poll reads the session's current root each turn
+  — capturing it would caption the new project with the old project's branch forever.
+- **Control commands are loopback-only** (`GRAPHAGENTS_ALLOW_REMOTE_CONTROL=1` opens them up).
+  The listener binds every interface, so without the gate anyone who can reach `:8080` could
+  list the host's directories and repoint the graph. SSH and VS Code forwarding arrive as
+  loopback, so the ordinary remote setup is unaffected.
+- **Frontend** (`web/`): 513/513 vitest green, `tsc` + `vite build` clean. Gource-style WebGL
   renderer (three.js force layout + `UnrealBloomPass` + per-agent figure and beams), pure
   `simulation.ts` model, typed `parseEvent`, auto-reconnecting `wsClient.ts`. Label placement
   lives in pure `labels.ts` (like `view.ts`) because `renderer.ts` needs a GL context and
@@ -213,7 +230,8 @@ Web MVP implemented and verified end-to-end (TDD).
   screenshot of an animated force layout proves nothing).
 
 Run: `GRAPHAGENTS_PROJECT_ROOT=/path/to/observed ./start.sh`. Point the root at the project
-you want to *watch*, not at `graph-agents`. Install attribution by copying the `hooks` block
+you want to *watch*, not at `graph-agents` — or start anywhere and switch with `ctrl+L` in the
+page (the switch is global: one daemon watches one root, so every viewer follows). Install attribution by copying the `hooks` block
 from `config/settings.json` into the observed project's `.claude/settings.json` — hook changes
 only apply to sessions started afterwards. Deps: `pip install -e '.[daemon]'`; the hook needs
 nothing. Rebuilding `web/dist` (or running vitest/tsc) needs Node 18+ — `start.sh` silently

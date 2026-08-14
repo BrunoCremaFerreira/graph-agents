@@ -288,6 +288,46 @@ describe("event log: hostile input", () => {
   });
 });
 
+/**
+ * The observed root becomes switchable from the page (ctrl+L), and the daemon
+ * announces the switch with a `reset` frame. Every line already in this list
+ * names a file of the PREVIOUS project -- paths that no longer exist, credited
+ * to agents that are no longer on screen -- so leaving them there makes the HUD
+ * read as activity in a project nobody is watching any more. Clearing is not
+ * cosmetic either: entries collapse against the TOP one, so a stale top entry
+ * would fold the new project's first edit into a count of 2 under the old
+ * project's line.
+ */
+describe("event log reset", () => {
+  it("empties the list, because every line names a file of the old project", () => {
+    const log = createEventLog();
+    log.push(event("M", "src/app.py"));
+    log.push(event("A", "docs/guide.md"));
+
+    log.reset();
+
+    expect(log.entries()).toEqual([]);
+  });
+
+  it("starts a new entry for a path that was on top before the reset", () => {
+    // Without a real clear, the first edit in the new project would silently
+    // become the second occurrence of the old project's line.
+    const log = createEventLog();
+    log.push(event("M", "src/app.py"));
+
+    log.reset();
+    log.push(event("M", "src/app.py"));
+
+    expect(log.entries().map((e) => e.count)).toEqual([1]);
+  });
+
+  it("is harmless on a list that has nothing in it yet", () => {
+    const log = createEventLog();
+
+    expect(() => log.reset()).not.toThrow();
+  });
+});
+
 describe("splitPath", () => {
   it("splits a nested path at the last slash, keeping the slash on the directory", () => {
     expect(splitPath("web/src/renderer.ts")).toEqual({ dir: "web/src/", name: "renderer.ts" });

@@ -5,10 +5,24 @@
  * silently. Dropped connections reconnect with capped exponential backoff.
  */
 
-import { parseEvent, parseMeta, type AgentEvent, type DaemonMeta } from "./protocol";
+import {
+  parseCompletion,
+  parseEvent,
+  parseMeta,
+  parseReset,
+  parseRootError,
+  type AgentEvent,
+  type DaemonMeta,
+  type RootCompletion,
+  type RootError,
+  type RootReset,
+} from "./protocol";
 
 export type EventSink = (event: AgentEvent) => void;
 export type MetaSink = (meta: DaemonMeta) => void;
+export type CompletionSink = (completion: RootCompletion) => void;
+export type ResetSink = (reset: RootReset) => void;
+export type RootErrorSink = (error: RootError) => void;
 
 export interface WsClientOptions {
   /** Backoff floor / ceiling in ms. */
@@ -16,6 +30,15 @@ export interface WsClientOptions {
   readonly maxDelayMs?: number;
   /** Where meta frames go. Absent means meta frames are dropped in silence. */
   readonly onMeta?: MetaSink;
+  /**
+   * The root-switch frames. All three ride this options object rather than new
+   * positional arguments, so `createWsClient(onEvent, url)` keeps compiling, and
+   * all three are dropped in silence when absent: a page built before these
+   * frames existed still has to survive a daemon that sends them.
+   */
+  readonly onCompletion?: CompletionSink;
+  readonly onReset?: ResetSink;
+  readonly onRootError?: RootErrorSink;
 }
 
 /** Used only outside a browser (tests, SSR); real pages derive from location. */
@@ -50,6 +73,9 @@ export class WsClient {
   private readonly minDelay: number;
   private readonly maxDelay: number;
   private readonly onMeta: MetaSink | undefined;
+  private readonly onCompletion: CompletionSink | undefined;
+  private readonly onReset: ResetSink | undefined;
+  private readonly onRootError: RootErrorSink | undefined;
 
   constructor(
     private readonly url: string,
@@ -59,6 +85,9 @@ export class WsClient {
     this.minDelay = options.minDelayMs ?? 500;
     this.maxDelay = options.maxDelayMs ?? 8000;
     this.onMeta = options.onMeta;
+    this.onCompletion = options.onCompletion;
+    this.onReset = options.onReset;
+    this.onRootError = options.onRootError;
     this.delay = this.minDelay;
   }
 
@@ -73,6 +102,26 @@ export class WsClient {
     this.closed = true;
     this.socket?.close();
     this.socket = null;
+  }
+
+  /**
+   * Write one request (a completion or a root switch) as JSON.
+   *
+   * SILENT when there is nothing to write to: no socket yet, one closed by
+   * `disconnect`, or one mid-backoff after the daemon restarted. This is called
+   * straight from a key handler, and an exception thrown out of it leaves the
+   * page with a dead keyboard — for a keystroke that could simply be dropped.
+   */
+  send(payload: object): void {
+    const socket = this.socket;
+    if (!socket) return;
+    if (socket.readyState !== WebSocket.OPEN) return;
+    try {
+      socket.send(JSON.stringify(payload));
+    } catch {
+      // A socket that died between the check and the write, or a payload that
+      // cannot be stringified: still not worth breaking the page over.
+    }
   }
 
   private open(): void {
@@ -102,6 +151,25 @@ export class WsClient {
       // A frame the HUD claims never reaches the simulation, with or without a
       // meta sink: routing it on as an event would grow a node for the root.
       this.onMeta?.(meta);
+      return;
+    }
+    // The root-switch frames are routed BEFORE parseEvent, and — like meta —
+    // consumed whether or not a sink was given. A reset delivered as an event
+    // would grow a node named after the new root instead of clearing the old
+    // project, which is the exact opposite of what the frame asks for.
+    const reset = parseReset(raw);
+    if (reset) {
+      this.onReset?.(reset);
+      return;
+    }
+    const completion = parseCompletion(raw);
+    if (completion) {
+      this.onCompletion?.(completion);
+      return;
+    }
+    const rootError = parseRootError(raw);
+    if (rootError) {
+      this.onRootError?.(rootError);
       return;
     }
     const event = parseEvent(raw);

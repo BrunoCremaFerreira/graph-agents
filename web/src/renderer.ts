@@ -436,6 +436,33 @@ export class GourceRenderer {
     this.view = releaseToAuto(this.view);
   }
 
+  /**
+   * Drop everything that outlives the model, because the daemon switched roots.
+   *
+   * Only two things here are NOT reconciled from the model each frame, and both
+   * would otherwise survive the new project: the actor figures and captions (an
+   * agent of the old checkout would keep standing on the new tree) and the
+   * in-flight beams (they point at paths that no longer exist). The nodes,
+   * edges, directory labels, file-label slots and layout all follow an emptied
+   * model on the next frame — `topologyChanged` sees the difference — so nothing
+   * of that is repeated here.
+   *
+   * The camera goes back to the automatic fit: it may be parked on a region of
+   * a project that is gone, and the new tree arrives elsewhere.
+   */
+  resetScene(): void {
+    for (const actor of this.actors.values()) {
+      this.scene.remove(actor.figure);
+      disposeSprite(actor.figure);
+      this.overlayScene.remove(actor.label);
+      disposeSprite(actor.label);
+    }
+    this.actors.clear();
+    this.beams.length = 0;
+    // Highlights of matches in the old tree, and `releaseToAuto` with them.
+    this.clearSearch();
+  }
+
   /** Start the render loop. */
   start(): void {
     if (this.running) return;
@@ -1120,6 +1147,19 @@ function sizeLabel(sprite: Sprite, emWorldHeight: number): void {
 const tmpColor = new Color();
 
 /** Sprite carrying the agent's figure, sized in world units. */
+/**
+ * Release a sprite's GPU memory: its texture first, then its material.
+ *
+ * Same discipline as `pruneDirLabels` — a canvas texture dropped without
+ * `dispose` stays in the GL context, and switching roots a few times would leak
+ * one per agent of every project seen.
+ */
+function disposeSprite(sprite: Sprite): void {
+  const material = sprite.material as SpriteMaterial;
+  material.map?.dispose();
+  material.dispose();
+}
+
 function makeAvatar(color: number): Sprite {
   const texture = new CanvasTexture(createAvatarCanvas(color));
   const material = new SpriteMaterial({

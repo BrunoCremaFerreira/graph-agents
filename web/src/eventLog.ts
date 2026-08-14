@@ -47,6 +47,16 @@ export interface EventLog {
   push(event: AgentEvent): boolean;
   /** Current entries, newest first. A snapshot: mutating it is harmless. */
   entries(): readonly LogEntry[];
+  /**
+   * Drop every line, because the observed root changed.
+   *
+   * Each one names a file of the PREVIOUS project — paths that no longer exist,
+   * credited to agents no longer on screen — so keeping them makes the HUD read
+   * as activity in a project nobody is watching. It is not cosmetic either:
+   * repeats collapse against the TOP entry, so a stale top line would fold the
+   * new project's first edit into a count of 2 under the old project's.
+   */
+  reset(): void;
 }
 
 /** A degenerate cap (0, negative, NaN, Infinity) falls back to the default. */
@@ -92,6 +102,10 @@ export function createEventLog(max?: number): EventLog {
 
     entries(): readonly LogEntry[] {
       return list.slice();
+    },
+
+    reset(): void {
+      list.length = 0;
     },
   };
 }

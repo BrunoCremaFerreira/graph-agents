@@ -34,6 +34,19 @@ export interface AttributionMonitor {
   observe(event: AgentEvent): void;
   /** Whether an attributed (non-seed, non-empty agent) event was ever seen. */
   attributed(): boolean;
+  /**
+   * Unlatch, because the page switched to a different project.
+   *
+   * Monotonicity holds WITHIN one observed root. The latch answers "are the
+   * capture hooks installed HERE?", and that is a property of the checkout —
+   * hooks live in the observed project's own `.claude/settings.json`, so proof
+   * gathered while watching one repository says nothing about the next. Carrying
+   * it across a root switch would suppress the warning in exactly the project
+   * that needs it: a fresh checkout with no hooks, whose tree updates with
+   * nobody on camera. This is the only way the latch goes back off; no event
+   * can do it.
+   */
+  reset(): void;
 }
 
 /** Whether an agent field is real proof of authorship (whitespace is not). */
@@ -60,6 +73,10 @@ export function createAttributionMonitor(): AttributionMonitor {
 
     attributed(): boolean {
       return proven;
+    },
+
+    reset(): void {
+      proven = false;
     },
   };
 }

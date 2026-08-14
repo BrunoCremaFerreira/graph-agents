@@ -149,6 +149,111 @@ export function parseMeta(raw: unknown): DaemonMeta | null {
   return { root, branch: typeof branch === "string" ? branch : null };
 }
 
+/**
+ * The daemon's answer to a Tab in the root bar.
+ *
+ * The browser cannot read the disk, so completion is a round trip: the reply
+ * lands milliseconds later, while the user keeps typing. `path` is the text the
+ * reply ANSWERS, and it is what lets the client recognise a stale one instead of
+ * overwriting the characters typed in between.
+ */
+export interface RootCompletion {
+  /** The text that was sent to be completed. */
+  path: string;
+  /** What it expands to (unchanged when nothing more is unambiguous). */
+  completed: string;
+  /** Directories the prefix still allows. A hint: may legitimately be empty. */
+  matches: string[];
+}
+
+/** The daemon switched roots: empty the graph, the new tree is coming. */
+export interface RootReset {
+  /** The root now being observed; `""` when the frame did not name one. */
+  root: string;
+}
+
+/** The daemon refused a typed root, with a reason to show the user. */
+export interface RootError {
+  /** The path that was refused. */
+  path: string;
+  /** Why, as the daemon put it; `""` when it did not say. */
+  reason: string;
+}
+
+/**
+ * Validate and parse a raw WebSocket message into a {@link RootCompletion}.
+ *
+ * Contract (see tests/rootProtocol.test.ts):
+ *   - `kind` must be exactly `"completion"`, which is what keeps every other
+ *     frame on this socket out.
+ *   - `path` and `completed` are required: without `completed` there is nothing
+ *     to adopt, and without `path` the reply cannot be matched to the field.
+ *   - `matches` is a HINT, so it degrades to `[]` when absent or not an array,
+ *     and non-string items are dropped one by one — a candidate that is not a
+ *     string reaches the DOM as "[object Object]", but the rest of the list is
+ *     still worth showing, and the `completed` path is worth adopting either way.
+ *   - NEVER throws.
+ */
+export function parseCompletion(raw: unknown): RootCompletion | null {
+  if (!isRecord(raw)) return null;
+
+  const { kind, path, completed, matches } = raw;
+
+  if (kind !== "completion") return null;
+  if (typeof path !== "string") return null;
+  if (typeof completed !== "string") return null;
+
+  const candidates = Array.isArray(matches)
+    ? matches.filter((item): item is string => typeof item === "string")
+    : [];
+
+  return { path, completed, matches: candidates };
+}
+
+/**
+ * Validate and parse a raw WebSocket message into a {@link RootReset}.
+ *
+ * Contract (see tests/rootProtocol.test.ts):
+ *   - Only `kind: "reset"` is accepted; anything else returns null, so an
+ *     activity event never wipes the graph and a `meta` frame (one word away,
+ *     and it also carries a `root`) never does either.
+ *   - A missing or mistyped `root` degrades to `""` instead of rejecting the
+ *     frame. This is stronger than `parseMeta`'s degradation and deliberate:
+ *     dropping a reset leaves the old project's nodes on screen while the new
+ *     project's tree streams in on top of them — two trees in one graph, with no
+ *     event that will ever delete the first. Clearing under a nameless root is
+ *     recoverable (the next `meta` names it); not clearing is not.
+ *   - NEVER throws.
+ */
+export function parseReset(raw: unknown): RootReset | null {
+  if (!isRecord(raw)) return null;
+  if (raw.kind !== "reset") return null;
+
+  return { root: typeof raw.root === "string" ? raw.root : "" };
+}
+
+/**
+ * Validate and parse a raw WebSocket message into a {@link RootError}.
+ *
+ * Contract (see tests/rootProtocol.test.ts):
+ *   - `kind` must be exactly `"rootError"` and `path` must be there: a refusal
+ *     that names no attempt cannot be matched to what the user typed.
+ *   - A missing or mistyped `reason` degrades to `""` rather than swallowing the
+ *     refusal — dropping it would close the bar as if the root had been
+ *     accepted, leaving the graph on the old project pretending to be the new.
+ *   - NEVER throws.
+ */
+export function parseRootError(raw: unknown): RootError | null {
+  if (!isRecord(raw)) return null;
+
+  const { kind, path, reason } = raw;
+
+  if (kind !== "rootError") return null;
+  if (typeof path !== "string") return null;
+
+  return { path, reason: typeof reason === "string" ? reason : "" };
+}
+
 /** Marker standing in for the elided middle of a truncated string. */
 const ELISION = "…";
 

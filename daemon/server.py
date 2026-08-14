@@ -16,13 +16,16 @@ The WebSocket is no longer output-only. The observed root used to be frozen at
 boot by ``GRAPHAGENTS_PROJECT_ROOT``, so watching a second project meant killing
 the daemon; the page can now retype it, which means frames also travel *inbound*:
 ``{"kind":"complete"}`` (answer a ``Tab``, because only the daemon can read the
-daemon's disk) and ``{"kind":"setRoot"}`` (observe another project). Both are
-answered to that client alone -- one viewer pressing ``Tab`` must not repaint the
-field of everybody else watching the same daemon.
+daemon's disk), ``{"kind":"setRoot"}`` (observe another project) and
+``{"kind":"file"}`` (what is *inside* the node that was clicked: its diff, its
+text, or a hex dump). All are answered to that client alone -- one viewer
+pressing ``Tab`` or opening a panel must not repaint the screen of everybody else
+watching the same daemon.
 
 Inbound commands are **loopback-only by default** (:func:`control_allowed`):
-``setRoot`` makes the daemon walk an arbitrary directory and re-seed from it,
-which is not something an open port should offer to anyone who can reach it. An
+``setRoot`` makes the daemon walk an arbitrary directory and re-seed from it, and
+``file`` hands over file *contents*, so exempting the latter because "it only
+reads" would turn an open port into a file server for the whole project. An
 SSH tunnel and VS Code port forwarding both arrive as loopback, so the ordinary
 remote setup keeps working untouched; ``GRAPHAGENTS_ALLOW_REMOTE_CONTROL=1``
 deliberately opens it to the rest of the network.
@@ -63,6 +66,7 @@ from websockets.asyncio.server import Server, ServerConnection, broadcast, serve
 from websockets.datastructures import Headers
 from websockets.http11 import Request, Response
 
+from graphagents.file_view import file_view
 from graphagents.normalize import (
     Event,
     actor_of,
@@ -359,7 +363,7 @@ def _encode(event: Event) -> str:
 
 #: The only kinds a client may send. Anything else is a browser from another
 #: version talking to this daemon, not an instruction.
-COMMAND_KINDS = ("complete", "setRoot")
+COMMAND_KINDS = ("complete", "setRoot", "file")
 
 
 def parse_command(raw: str) -> dict | None:
@@ -516,10 +520,23 @@ class Session:
     async def handle_command(
         self, command: dict, websocket: ServerConnection
     ) -> None:
-        """Run one parsed command and answer *that* client, nobody else."""
+        """Run one parsed command and answer *that* client, nobody else.
+
+        Dispatched explicitly on ``kind``. It used to read "``complete``, else
+        treat it as a ``setRoot``", which was fine while those were the only two
+        commands and actively wrong the moment a third existed: a ``file`` would
+        have fallen through and swapped the observed project for a refusal about
+        a path that is not a directory.
+        """
         path = command["path"]
-        if command["kind"] == "complete":
+        kind = command["kind"]
+        if kind == "complete":
             await _send(websocket, completion_response(path, self.home))
+            return
+        if kind == "file":
+            await _send(websocket, await file_view(self.root, path))
+            return
+        if kind != "setRoot":
             return
         reason = await self.switch_root(path)
         if reason is not None:

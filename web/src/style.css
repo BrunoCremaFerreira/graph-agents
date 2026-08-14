@@ -284,3 +284,124 @@ body {
 #root-bar #root-error[hidden] {
   display: none;
 }
+
+/*
+ * File viewer, centred and modal: the diff/text/hex of the file that was
+ * clicked. `pointer-events: auto` is required — the body is scrolled and the
+ * backdrop is clicked — and the panel deliberately covers the graph: it is read,
+ * not glanced at while the tree keeps moving underneath.
+ */
+#file-view {
+  position: fixed;
+  inset: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  pointer-events: auto;
+}
+
+/*
+ * The `display: flex` above would otherwise override the `hidden` attribute and
+ * leave the panel over the graph for good — the same trap as #context-branch,
+ * #search and #root-bar.
+ */
+#file-view[hidden] {
+  display: none;
+}
+
+/* Dimmed graph behind the panel, so the text is the only thing being read. */
+#file-view #file-view-backdrop {
+  position: absolute;
+  inset: 0;
+  background: rgba(0, 0, 0, 0.72);
+}
+
+/* ~80% of the screen, and never more: a long diff scrolls inside the panel. */
+#file-view #file-view-panel {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  width: 80vw;
+  height: 80vh;
+  min-height: 0;
+  border: 1px solid #2a2e34;
+  border-radius: 6px;
+  background: rgba(12, 13, 15, 0.96);
+  color: #d5d9df;
+  font: 12px/1.4 system-ui, sans-serif;
+}
+
+#file-view #file-view-head {
+  flex: 0 0 auto;
+  display: flex;
+  align-items: baseline;
+  gap: 10px;
+  padding: 8px 12px;
+  border-bottom: 1px solid #2a2e34;
+  white-space: nowrap;
+  user-select: none;
+}
+
+/* The path is what gets clipped; everything else in the row is short. */
+#file-view #file-view-path {
+  flex: 0 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  color: #d5d9df;
+}
+
+#file-view #file-view-mode {
+  flex: 0 0 auto;
+  color: #5c6067;
+}
+
+#file-view #file-view-truncated {
+  flex: 0 0 auto;
+  color: #d9b98b;
+}
+
+#file-view #file-view-truncated[hidden] {
+  display: none;
+}
+
+/* Pushed to the far right; the shortcut is a reminder, not a control. */
+#file-view #file-view-hint {
+  flex: 0 0 auto;
+  margin-left: auto;
+  color: #5c6067;
+}
+
+/*
+ * The content. Monospaced and pre-wrapped: a hex dump and a diff are aligned by
+ * column, and horizontal scrolling loses that alignment off-screen.
+ */
+#file-view #file-view-body {
+  flex: 1 1 auto;
+  min-height: 0;
+  margin: 0;
+  padding: 10px 12px;
+  overflow: auto;
+  color: #b3b8c1;
+  font: 12px/1.45 ui-monospace, "SF Mono", Menlo, Consolas, monospace;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  tab-size: 4;
+}
+
+#file-view #file-view-body.error {
+  color: #d98b8b;
+}
+
+/* The diff's three line kinds — the only decoration in the panel. */
+#file-view #file-view-body .add {
+  color: #7ee787;
+}
+
+#file-view #file-view-body .del {
+  color: #f0796a;
+}
+
+#file-view #file-view-body .hunk {
+  color: #79a8ff;
+}

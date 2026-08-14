@@ -254,6 +254,70 @@ export function parseRootError(raw: unknown): RootError | null {
   return { path, reason: typeof reason === "string" ? reason : "" };
 }
 
+/**
+ * How the daemon chose to render the file it was asked for.
+ *
+ * The fallback chain: the `git diff` of the file, else its text, else a hex dump
+ * when it is binary.
+ */
+export type FileViewMode = "diff" | "text" | "hex";
+
+/** The three modes the panel knows how to draw. Anything else degrades to text. */
+const FILE_VIEW_MODES: ReadonlySet<string> = new Set<FileViewMode>(["diff", "text", "hex"]);
+
+/**
+ * The daemon's answer to a click on a file.
+ *
+ * The browser cannot read the disk, so the content is a round trip on the same
+ * socket the events arrive on. `path` is the file the frame ANSWERS, and it is
+ * what lets the client recognise a reply for a file it has stopped showing.
+ */
+export interface FileView {
+  /** The file this answer is about, relative to the observed root. */
+  path: string;
+  /** How to render {@link content}. */
+  mode: FileViewMode;
+  /** The diff, the text or the hex dump; `""` when the read failed. */
+  content: string;
+  /** Whether the daemon cut the output short. */
+  truncated: boolean;
+  /** Why the daemon could not show the file, or `""` when it could. */
+  error: string;
+}
+
+/**
+ * Validate and parse a raw WebSocket message into a {@link FileView}.
+ *
+ * Contract (see tests/fileViewProtocol.test.ts):
+ *   - `kind` must be exactly `"fileView"` and `path` must be a string: an answer
+ *     naming no file cannot be matched to the click that asked for it, and
+ *     `applyView` would paint one file's diff under another file's name.
+ *   - everything else DEGRADES rather than costing the frame, as `parseMeta`'s
+ *     `branch` does. An unusable `mode` from a newer daemon falls back to
+ *     `"text"` — the one rendering that is never actively wrong — a missing
+ *     `content` or `error` to `""`, and a non-boolean `truncated` to `false`, so
+ *     an "output cut" notice never lands on content that is whole. Dropping the
+ *     frame instead would leave the panel spinning on `loading` forever, because
+ *     no second reply is coming for that click.
+ *   - NEVER throws.
+ */
+export function parseFileView(raw: unknown): FileView | null {
+  if (!isRecord(raw)) return null;
+
+  const { kind, path, mode, content, truncated, error } = raw;
+
+  if (kind !== "fileView") return null;
+  if (typeof path !== "string") return null;
+
+  return {
+    path,
+    mode: typeof mode === "string" && FILE_VIEW_MODES.has(mode) ? (mode as FileViewMode) : "text",
+    content: typeof content === "string" ? content : "",
+    truncated: truncated === true,
+    error: typeof error === "string" ? error : "",
+  };
+}
+
 /** Marker standing in for the elided middle of a truncated string. */
 const ELISION = "…";
 

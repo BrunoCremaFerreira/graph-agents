@@ -9,6 +9,11 @@ to arrive. Two commands open that direction:
   * ``{"kind": "complete", "path": ...}`` -- answer a ``Tab``. The browser cannot
     read the daemon's disk, so completion has to be resolved here.
   * ``{"kind": "setRoot", "path": ...}`` -- observe another project.
+  * ``{"kind": "file", "path": ...}`` -- what is *in* the node that was clicked
+    (diff, text, or hex dump). Same shape, same refusals, and deliberately the
+    same authorization: this one hands over **file contents**, not just the names
+    of directories, so exempting it from ``control_allowed`` because "it only
+    reads" would turn an open port into a file server for the whole project.
 
 Both are answered **to that client alone**, never broadcast: one viewer pressing
 ``Tab`` must not repaint the field of everybody else looking at the same daemon.
@@ -34,17 +39,57 @@ Style: Arrange-Act-Assert, one failure reason per test.
 
 from __future__ import annotations
 
+import asyncio
 import json
 from pathlib import Path
 
 import pytest
 
-from daemon.server import completion_response, control_allowed, parse_command
+from daemon.server import (
+    Session,
+    _handle_ws_client,
+    completion_response,
+    control_allowed,
+    parse_command,
+)
 
 
 def _dirs(root: Path, *names: str) -> None:
     for name in names:
         (root / name).mkdir(parents=True, exist_ok=True)
+
+
+def _run(coro):
+    return asyncio.run(asyncio.wait_for(coro, timeout=30))
+
+
+class _FakeClient:
+    """Just enough of a connection: an address, a `send`, and frames to deliver.
+
+    Not a mock of the daemon's own code -- only of the socket underneath it, so
+    what is exercised here is the real dispatch.
+    """
+
+    def __init__(self, *frames: str, host: str = "127.0.0.1") -> None:
+        self.remote_address = (host, 54321)
+        self.sent: list[str] = []
+        self._inbound = list(frames)
+
+    async def send(self, message: str) -> None:
+        self.sent.append(message)
+
+    def __aiter__(self):
+        async def iterator():
+            for frame in self._inbound:
+                yield frame
+
+        return iterator()
+
+    def frames(self) -> list[dict]:
+        return [json.loads(message) for message in self.sent]
+
+    def kinds(self) -> list[str]:
+        return [frame.get("kind") for frame in self.frames()]
 
 
 # --- 1. parse_command: a frame off the wire -> a command, or nothing --------
@@ -215,3 +260,88 @@ def test_a_path_that_cannot_be_read_still_answers(tmp_path: Path):
 
     assert answer["kind"] == "completion"
     assert answer["matches"] == []
+
+
+# --- 4. the `file` command: what is inside the node that was clicked -------
+
+def test_a_file_command_is_understood():
+    assert parse_command('{"kind":"file","path":"src/app.ts"}') == {
+        "kind": "file",
+        "path": "src/app.ts",
+    }
+
+
+def test_a_file_command_without_a_string_path_is_not_a_command():
+    # The path reaches `open()` this time; a list or a number arriving there
+    # would raise inside the loop serving that browser.
+    assert parse_command('{"kind":"file","path":42}') is None
+    assert parse_command('{"kind":"file"}') is None
+
+
+def test_a_file_command_is_answered_to_the_client_that_asked(tmp_path: Path):
+    # Never broadcast: one viewer opening a panel must not shove a file into
+    # everybody else's screen.
+    (tmp_path / "a.txt").write_text("hello\n", encoding="utf-8")
+    session = Session(str(tmp_path), str(tmp_path))
+    client = _FakeClient()
+
+    _run(session.handle_command({"kind": "file", "path": "a.txt"}, client))
+
+    assert client.kinds() == ["fileView"]
+
+
+def test_the_file_frame_carries_the_content_of_that_path(tmp_path: Path):
+    (tmp_path / "a.txt").write_text("hello\n", encoding="utf-8")
+    session = Session(str(tmp_path), str(tmp_path))
+    client = _FakeClient()
+
+    _run(session.handle_command({"kind": "file", "path": "a.txt"}, client))
+
+    assert client.frames()[0]["content"] == "hello\n"
+
+
+def test_a_file_command_does_not_repoint_the_daemon(tmp_path: Path):
+    # `handle_command` currently treats everything that is not `complete` as a
+    # `setRoot`; a `file` falling through would swap the observed project for a
+    # refusal about a path that is not a directory.
+    (tmp_path / "a.txt").write_text("hello\n", encoding="utf-8")
+    session = Session(str(tmp_path), str(tmp_path))
+    root_before = session.root
+    client = _FakeClient()
+
+    _run(session.handle_command({"kind": "file", "path": "a.txt"}, client))
+
+    assert session.root == root_before
+    assert "rootError" not in client.kinds()
+
+
+def test_a_remote_peer_may_not_read_files_through_the_file_command(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+):
+    # `file` is understood, and still refused off-loopback: it reads contents, so
+    # it is at least as privileged as `setRoot`. Both halves are asserted because
+    # a `file` nobody parses would satisfy the refusal for the wrong reason.
+    monkeypatch.delenv("GRAPHAGENTS_ALLOW_REMOTE_CONTROL", raising=False)
+    (tmp_path / "a.txt").write_text("top secret\n", encoding="utf-8")
+    session = Session(str(tmp_path), str(tmp_path))
+    frame = '{"kind":"file","path":"a.txt"}'
+    client = _FakeClient(frame, host="192.168.1.50")
+
+    _run(_handle_ws_client(session.hub, session, client))
+
+    assert parse_command(frame) is not None
+    assert "fileView" not in client.kinds()
+    assert "top secret" not in "".join(client.sent)
+
+
+def test_a_loopback_peer_is_served_the_file_it_asked_for(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+):
+    monkeypatch.delenv("GRAPHAGENTS_ALLOW_REMOTE_CONTROL", raising=False)
+    (tmp_path / "a.txt").write_text("hello\n", encoding="utf-8")
+    session = Session(str(tmp_path), str(tmp_path))
+    client = _FakeClient('{"kind":"file","path":"a.txt"}', host="127.0.0.1")
+
+    _run(_handle_ws_client(session.hub, session, client))
+
+    assert "fileView" in client.kinds()

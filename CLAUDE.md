@@ -93,6 +93,9 @@ graphagents/normalize.py  # pure: hook JSON → Event; also actor_of / seed_even
 graphagents/tree.py       # boot snapshot of the observed project
 graphagents/repo.py       # pure: reads .git/HEAD for the branch (never shells out to git)
 graphagents/paths.py      # pure: resolve a typed root, and complete a directory like a shell
+graphagents/hexdump.py    # pure: the xxd format, byte for byte, + is-this-binary
+graphagents/diff.py       # the ONE module that runs `git` (see the note in Status)
+graphagents/file_view.py  # what a clicked file shows: diff, else text, else hex
 hooks/emit_event.py       # hook entrypoint: JSON in → daemon socket
 daemon/server.py          # EventHub: seed, attribution, dedupe, meta, WebSocket + HTTP
 daemon/watcher.py         # inotify watcher (watchdog)
@@ -102,6 +105,8 @@ web/src/eventLog.ts       # pure: the recent-changes list model (drops seed, fol
 web/src/attribution.ts    # pure: has any attributed event arrived? (latch, never unlatches)
 web/src/search.ts         # pure: match, the walk over matches, and the camera frame for them
 web/src/rootPrompt.ts     # pure: the ctrl+L bar's state (text, completion, discard on Esc)
+web/src/pick.ts           # pure: which file a click landed on, and what counts as a click
+web/src/fileView.ts       # pure: the content panel's state (request, adopt, discard)
 web/src/searchKeys.ts     # pure: what ctrl+F / F3 / Esc mean
 web/src/*Hud.ts           # thin DOM painters: context caption, event list, attribution, search box
 run.sh / start.sh         # minimal launcher / full bootstrap
@@ -163,7 +168,7 @@ asking the tester for the RED tests, not by asking a developer to implement blin
 
 Web MVP implemented and verified end-to-end (TDD).
 
-- **Backend** (`graphagents/`, `hooks/`, `daemon/`): 273/273 pytest green. Hook is stdlib-only
+- **Backend** (`graphagents/`, `hooks/`, `daemon/`): 343/343 pytest green. Hook is stdlib-only
   and exits 0 on garbage input. Daemon seeds the project tree at boot, ingests hook events on
   a Unix socket, watches the filesystem, and serves `web/dist` over HTTP **and** broadcasts
   events over WebSocket (`/ws`) on a single port (`:8080`) — one forwarded port is enough for
@@ -179,11 +184,27 @@ Web MVP implemented and verified end-to-end (TDD).
   `asyncio.to_thread`, because a root like `~` would otherwise block the event loop for
   seconds and freeze every viewer. The branch poll reads the session's current root each turn
   — capturing it would caption the new project with the old project's branch forever.
+- **Clicking a file opens what is inside it.** A click (not a drag: under 4 px and 400 ms, and
+  never the second half of a double-click, which belongs to auto-fit) picks the nearest file
+  node within ~14 device px and asks the daemon for `{"kind":"file"}`. The answer is, in this
+  order, the `git diff HEAD --` of that path, else its text, else an `xxd` dump — and `xxd`
+  means the real format: the tests compare against the installed binary rather than trusting
+  a hand-written spec. Two defences apply because the path arrives from the network:
+  `resolve_inside` refuses anything resolving outside the observed root (symlinks included),
+  and the content is capped at 256 KiB, flagged `truncated`, because it crosses the WebSocket
+  whole.
+- **`graphagents/diff.py` is the only module that runs `git`,** and that is deliberate. The
+  "files, never `subprocess`" rule in `repo.py` is about the branch poll, which reads every
+  couple of seconds; a diff is one fork per user gesture, and reimplementing it would mean the
+  index, zlib objects and a diff algorithm. It never raises: no repo, no `git`, no change, or a
+  timeout all mean `None`, which reads as "no diff, show the content". On timeout the child is
+  killed *and* its transport closed before waiting — a wrapper script leaves a grandchild
+  holding the inherited pipe, and `wait()` alone hangs until it dies.
 - **Control commands are loopback-only** (`GRAPHAGENTS_ALLOW_REMOTE_CONTROL=1` opens them up).
   The listener binds every interface, so without the gate anyone who can reach `:8080` could
   list the host's directories and repoint the graph. SSH and VS Code forwarding arrive as
   loopback, so the ordinary remote setup is unaffected.
-- **Frontend** (`web/`): 513/513 vitest green, `tsc` + `vite build` clean. Gource-style WebGL
+- **Frontend** (`web/`): 643/643 vitest green, `tsc` + `vite build` clean. Gource-style WebGL
   renderer (three.js force layout + `UnrealBloomPass` + per-agent figure and beams), pure
   `simulation.ts` model, typed `parseEvent`, auto-reconnecting `wsClient.ts`. Label placement
   lives in pure `labels.ts` (like `view.ts`) because `renderer.ts` needs a GL context and

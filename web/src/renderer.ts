@@ -55,6 +55,7 @@ import {
 } from "./view";
 import { frameMatches, type SearchFrame } from "./search";
 import { createSearchMarkerCanvas } from "./searchMarker";
+import { pickFile, isClickGesture, type PickCandidate, type ClickGesture } from "./pick";
 import {
   fileLabelOpacity,
   labelFontPixels,
@@ -136,6 +137,15 @@ const SEARCH_MARKER_PIXELS = 44;
 /** How fast the camera eases onto what the search asked it to show. */
 const SEARCH_FOCUS_EASE = 0.12;
 
+/**
+ * How near a file dot a click must land, in DEVICE pixels.
+ *
+ * In pixels, like {@link SEARCH_MARKER_PIXELS} and for the same reason: with the
+ * camera spanning halfHeight 2..4000 a world-unit radius would select nothing
+ * with the tree framed and half the project up close.
+ */
+const PICK_RADIUS_PIXELS = 14;
+
 /** Per-point shader: per-vertex size (px) + color, soft circular alpha. */
 const POINT_VERTEX = /* glsl */ `
   attribute float aSize;
@@ -158,6 +168,18 @@ const POINT_FRAGMENT = /* glsl */ `
     gl_FragColor = vec4(vColor, alpha);
   }
 `;
+
+/** What the page wants to hear about, beyond drawing. */
+export interface RendererOptions {
+  /**
+   * A click that landed on a file node, by path.
+   *
+   * The renderer reports the hit and nothing more: what a click on a file MEANS
+   * -- ask the daemon, open a panel -- belongs to `main.ts`, and this layer has
+   * no idea a panel exists.
+   */
+  readonly onFileClick?: (path: string) => void;
+}
 
 export class GourceRenderer {
   private readonly renderer: WebGLRenderer;
@@ -185,6 +207,10 @@ export class GourceRenderer {
   private dragPointer: number | null = null;
   private dragX = 0;
   private dragY = 0;
+  /** Where and when the press started, kept apart from the drag's last position. */
+  private downX = 0;
+  private downY = 0;
+  private downTime = 0;
   private readonly reportedFrameErrors = new Set<string>();
   private readonly beamPos = new Float32Array(MAX_BEAMS * 2 * 3);
   private readonly beamColor = new Float32Array(MAX_BEAMS * 2 * 3);
@@ -221,6 +247,13 @@ export class GourceRenderer {
    * to their question. The next `setSearch` (a new query, or F3) rearms.
    */
   private searchArmed = false;
+  /**
+   * The file the viewer panel is open on, or null.
+   *
+   * No domain state either: `main.ts` owns the panel and hands this down so the
+   * frame can mark which dot the text on screen belongs to.
+   */
+  private openFilePath: string | null = null;
   /** The active match's ring, in the MAIN scene: unlike text, it should glow. */
   private readonly searchMarker: Sprite;
   /** Scratch for the camera frame; refilled in place, never reallocated. */
@@ -244,7 +277,11 @@ export class GourceRenderer {
   /** Per-frame label metrics, reused in place so the hot path allocates nothing. */
   private readonly labelMetrics = { em: 0, offset: 0, worldPerPixel: 0 };
 
-  constructor(private readonly canvas: HTMLCanvasElement, private readonly sim: Simulation) {
+  constructor(
+    private readonly canvas: HTMLCanvasElement,
+    private readonly sim: Simulation,
+    private readonly options: RendererOptions = {},
+  ) {
     this.renderer = new WebGLRenderer({ canvas, antialias: true, powerPreference: "high-performance" });
     this.renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
     this.renderer.setClearColor(0x000000, 1);
@@ -340,6 +377,11 @@ export class GourceRenderer {
       this.dragPointer = event.pointerId;
       this.dragX = event.clientX;
       this.dragY = event.clientY;
+      // Kept separately from the drag position, which every `pointermove`
+      // overwrites: telling a click from a pan needs the ORIGIN of the gesture.
+      this.downX = event.clientX;
+      this.downY = event.clientY;
+      this.downTime = performance.now();
       this.canvas.setPointerCapture(event.pointerId);
       this.canvas.style.cursor = "grabbing";
     });
@@ -366,7 +408,15 @@ export class GourceRenderer {
         this.canvas.releasePointerCapture(event.pointerId);
       }
     };
-    this.canvas.addEventListener("pointerup", endDrag);
+    this.canvas.addEventListener("pointerup", (event: PointerEvent) => {
+      // Only a release that ends the gesture this canvas is tracking can be a
+      // click, and only after the drag has been closed out.
+      const ours = this.dragPointer === event.pointerId;
+      endDrag(event);
+      if (ours) this.handleClick(event);
+    });
+    // A cancelled pointer (the browser took it for a gesture of its own) ends
+    // the pan and opens nothing.
     this.canvas.addEventListener("pointercancel", endDrag);
 
     this.canvas.addEventListener("dblclick", () => {
@@ -383,6 +433,64 @@ export class GourceRenderer {
       x: ((event.clientX - rect.left) / Math.max(1, rect.width)) * 2 - 1,
       y: -(((event.clientY - rect.top) / Math.max(1, rect.height)) * 2 - 1),
     };
+  }
+
+  /**
+   * A press and release in the same place: report the file under it, if any.
+   *
+   * Everything decided here is either a threshold or a coordinate change; WHICH
+   * node wins is `pickFile`'s, in a pure module with tests, because this class
+   * needs a GL context and none can reach it.
+   */
+  private handleClick(event: PointerEvent): void {
+    const onFileClick = this.options.onFileClick;
+    if (!onFileClick) return;
+    // Whether this gesture is a click at all is `isClickGesture`'s, next to
+    // `pickFile` and for the same reason: it is a decision, and no decision is
+    // testable in here.
+    const gesture: ClickGesture = {
+      detail: event.detail,
+      dx: event.clientX - this.downX,
+      dy: event.clientY - this.downY,
+      elapsedMs: performance.now() - this.downTime,
+    };
+    if (!isClickGesture(gesture)) return;
+
+    // Pointer to world by the same path `zoomAt` takes, so what is under the
+    // cursor here is what the wheel would have zoomed towards.
+    const ndc = this.pointerNdc(event);
+    const world = {
+      x: this.view.centerX + ndc.x * this.view.halfHeight * this.aspect(),
+      y: this.view.centerY + ndc.y * this.view.halfHeight,
+    };
+
+    // Directories are left out: the panel shows file contents, and a click on a
+    // folder does nothing rather than opening its nearest child by accident.
+    const candidates: PickCandidate[] = [];
+    for (const node of this.sim.listNodes()) {
+      if (node.kind !== "file") continue;
+      const p = this.layout.position(node.path);
+      if (!p) continue;
+      candidates.push({ path: node.path, x: p.x, y: p.y });
+    }
+
+    const hit = pickFile(
+      candidates,
+      world,
+      this.labelMetrics.worldPerPixel * PICK_RADIUS_PIXELS,
+    );
+    if (hit) onFileClick(hit);
+  }
+
+  /**
+   * Mark the file whose contents are on screen, or clear the mark with null.
+   *
+   * It wears the search's active highlight so there is no doubt which dot the
+   * panel is about — the two never disagree, because the ring goes to the open
+   * file while there is one.
+   */
+  setOpenFile(path: string | null): void {
+    this.openFilePath = path;
   }
 
   /** Register a discrete event for its visual effect (actor beam + flash). */
@@ -459,6 +567,9 @@ export class GourceRenderer {
     }
     this.actors.clear();
     this.beams.length = 0;
+    // The file that was open belonged to the old project; its highlight would
+    // otherwise be waiting for a path the new tree may never have.
+    this.openFilePath = null;
     // Highlights of matches in the old tree, and `releaseToAuto` with them.
     this.clearSearch();
   }
@@ -594,9 +705,12 @@ export class GourceRenderer {
       // idle fade -- the user asked for this node by name, so it must be
       // visible however cold it is) and a few pixels more, with the active one
       // larger still and pulsing so it reads apart from its siblings.
-      const matched = this.searchMatches.size > 0 && this.searchMatches.has(node.path);
+      // The open file is highlighted the same way, and as the ACTIVE one: it is
+      // the node the panel covering the graph is showing.
+      const opened = node.path === this.openFilePath;
+      const matched = opened || (this.searchMatches.size > 0 && this.searchMatches.has(node.path));
       if (matched) {
-        const active = node.path === this.searchActivePath;
+        const active = opened || node.path === this.searchActivePath;
         const pulse = active
           ? 1 + SEARCH_PULSE_DEPTH * Math.sin(this.elapsed * SEARCH_PULSE_RATE)
           : 1;
@@ -786,8 +900,11 @@ export class GourceRenderer {
    * screen on a single file.
    */
   private updateSearchMarker(): void {
-    const path = this.searchActivePath;
-    const p = path && this.searchMatches.has(path) ? this.layout.position(path) : undefined;
+    // The open file takes the ring while there is one: it is the node the user
+    // is reading, and it needs no search behind it to be worth pointing at.
+    const path = this.openFilePath ?? this.searchActivePath;
+    const ringed = path !== null && (path === this.openFilePath || this.searchMatches.has(path));
+    const p = ringed && path ? this.layout.position(path) : undefined;
     if (!p) {
       this.searchMarker.visible = false;
       return;
@@ -1193,6 +1310,10 @@ function makeSearchMarker(): Sprite {
 }
 
 /** Factory that keeps construction details out of `main.ts`. */
-export function createRenderer(canvas: HTMLCanvasElement, sim: Simulation): GourceRenderer {
-  return new GourceRenderer(canvas, sim);
+export function createRenderer(
+  canvas: HTMLCanvasElement,
+  sim: Simulation,
+  options: RendererOptions = {},
+): GourceRenderer {
+  return new GourceRenderer(canvas, sim, options);
 }

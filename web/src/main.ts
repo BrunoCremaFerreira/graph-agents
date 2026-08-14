@@ -26,6 +26,15 @@ import {
   setText,
   type RootPromptState,
 } from "./rootPrompt";
+import { createFileViewHud } from "./fileViewHud";
+import { interpretFileViewKey } from "./fileViewKeys";
+import {
+  applyView,
+  closeView,
+  createFileView,
+  requestView,
+  type FileViewState,
+} from "./fileView";
 import {
   activePath,
   closeSearch,
@@ -42,7 +51,17 @@ function boot(): void {
   if (!canvas) throw new Error("missing #stage canvas");
 
   const sim = createSimulation();
-  const renderer = createRenderer(canvas, sim);
+  const renderer = createRenderer(canvas, sim, {
+    // The renderer reports which file was clicked and stops there; asking the
+    // daemon for it and opening the panel is this layer's job.
+    onFileClick: (path) => {
+      // The browser cannot read the disk, so this is a round trip; the answer
+      // comes back through `onFileView`. The panel opens now, in `loading`, or
+      // the click reads as one that missed and gets repeated.
+      client.send({ kind: "file", path });
+      showFileView(requestView(fileView, path));
+    },
+  });
   const contextEl = document.getElementById("context");
   const contextHud = contextEl ? createContextHud(contextEl) : null;
   const logEl = document.getElementById("log");
@@ -54,6 +73,8 @@ function boot(): void {
   const searchHud = searchEl ? createSearchHud(searchEl) : null;
   const rootEl = document.getElementById("root-bar");
   const rootHud = rootEl ? createRootHud(rootEl) : null;
+  const fileViewEl = document.getElementById("file-view");
+  const fileViewHud = fileViewEl ? createFileViewHud(fileViewEl) : null;
 
   // The search's whole state machine is in `search.ts`; this is just the one
   // variable holding the state it returns, and the wiring that shows it.
@@ -87,6 +108,25 @@ function boot(): void {
     rootHud?.setError(rootPrompt.error);
   }
 
+  // And the same shape once more for the file viewer: `fileView.ts` holds the
+  // state machine (including which late answers to ignore), this holds what it
+  // returned and paints it.
+  let fileView: FileViewState = createFileView();
+
+  function showFileView(next: FileViewState): void {
+    fileView = next;
+    if (!fileView.open) {
+      fileViewHud?.close();
+      // The dot in the graph stops being the one on screen at the same moment
+      // the panel does.
+      renderer.setOpenFile(null);
+      return;
+    }
+    fileViewHud?.open();
+    fileViewHud?.render(fileView);
+    renderer.setOpenFile(fileView.path);
+  }
+
   const client = createWsClient(
     (event) => {
       sim.applyEvent(event);
@@ -113,12 +153,19 @@ function boot(): void {
       // A refused path keeps the bar open with the text still in it, so the typo
       // can be fixed; that rule is `failPrompt`'s, not this handler's.
       onRootError: (error) => showRoot(failPrompt(rootPrompt, error.reason)),
+      // A file's contents came back. `applyView` decides whether this answer is
+      // still the one being waited for -- the user may have clicked elsewhere,
+      // or closed the panel, while it travelled -- so nothing here inspects it.
+      onFileView: (view) => showFileView(applyView(fileView, view)),
       onReset: () => {
         // The root changed: everything on screen belongs to the old project and
         // the new tree is already on its way.
         sim.reset();
         renderer.resetScene();
         eventHud?.clear();
+        // The open file was a file of the old project: its contents are now
+        // about a path nobody is looking at.
+        showFileView(closeView(fileView));
         attribution.reset();
         attributionHud?.update(false, false);
         // Only now does the bar close: the switch is confirmed, not merely sent.
@@ -131,7 +178,17 @@ function boot(): void {
   rootHud?.onTextChange((text) => showRoot(setText(rootPrompt, text)));
 
   window.addEventListener("keydown", (event) => {
-    // The root bar goes first, and an answered key never reaches the search: an
+    // The modal goes before everything: while a panel covers the graph, Escape
+    // is the panel's, not the search box's and not the root bar's. The binding
+    // declines every key while the panel is closed, so nothing below it loses
+    // Escape the rest of the time.
+    if (interpretFileViewKey(event, fileView.open)) {
+      event.preventDefault();
+      showFileView(closeView(fileView));
+      return;
+    }
+
+    // The root bar goes next, and an answered key never reaches the search: an
     // open bar owns Enter and Escape, which the search box also answers.
     const rootCommand = interpretRootKey(event, rootPrompt.open);
     if (rootCommand) {

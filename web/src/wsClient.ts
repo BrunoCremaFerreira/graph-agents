@@ -8,11 +8,13 @@
 import {
   parseCompletion,
   parseEvent,
+  parseFileView,
   parseMeta,
   parseReset,
   parseRootError,
   type AgentEvent,
   type DaemonMeta,
+  type FileView,
   type RootCompletion,
   type RootError,
   type RootReset,
@@ -23,6 +25,7 @@ export type MetaSink = (meta: DaemonMeta) => void;
 export type CompletionSink = (completion: RootCompletion) => void;
 export type ResetSink = (reset: RootReset) => void;
 export type RootErrorSink = (error: RootError) => void;
+export type FileViewSink = (view: FileView) => void;
 
 export interface WsClientOptions {
   /** Backoff floor / ceiling in ms. */
@@ -39,6 +42,11 @@ export interface WsClientOptions {
   readonly onCompletion?: CompletionSink;
   readonly onReset?: ResetSink;
   readonly onRootError?: RootErrorSink;
+  /**
+   * The daemon's answer to a click on a file. Optional and consumed either way,
+   * for the same reason as the frames above.
+   */
+  readonly onFileView?: FileViewSink;
 }
 
 /** Used only outside a browser (tests, SSR); real pages derive from location. */
@@ -76,6 +84,7 @@ export class WsClient {
   private readonly onCompletion: CompletionSink | undefined;
   private readonly onReset: ResetSink | undefined;
   private readonly onRootError: RootErrorSink | undefined;
+  private readonly onFileView: FileViewSink | undefined;
 
   constructor(
     private readonly url: string,
@@ -88,6 +97,7 @@ export class WsClient {
     this.onCompletion = options.onCompletion;
     this.onReset = options.onReset;
     this.onRootError = options.onRootError;
+    this.onFileView = options.onFileView;
     this.delay = this.minDelay;
   }
 
@@ -170,6 +180,14 @@ export class WsClient {
     const rootError = parseRootError(raw);
     if (rootError) {
       this.onRootError?.(rootError);
+      return;
+    }
+    // Also before `parseEvent`, and also consumed without a sink: a file's diff
+    // is an answer about a path, not a change to it, and routing it on would
+    // flash the file in the graph every time someone opened it.
+    const fileView = parseFileView(raw);
+    if (fileView) {
+      this.onFileView?.(fileView);
       return;
     }
     const event = parseEvent(raw);

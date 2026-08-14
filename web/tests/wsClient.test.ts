@@ -131,6 +131,22 @@ const ROOT_ERROR_FRAME = JSON.stringify({
   reason: "no such directory",
 });
 
+const FILE_VIEW_FRAME = JSON.stringify({
+  kind: "fileView",
+  path: "src/api/users.ts",
+  mode: "diff",
+  content: "@@ -1 +1 @@\n-old\n+new\n",
+  truncated: false,
+  error: "",
+});
+
+/** `kind` says fileView but there is no path to match the click against. */
+const BROKEN_FILE_VIEW_FRAME = JSON.stringify({
+  kind: "fileView",
+  mode: "diff",
+  content: "@@ -1 +1 @@\n-old\n+new\n",
+});
+
 const EVENT_FRAME = JSON.stringify({
   ts: 1754870400.5,
   agent: "sess-abc",
@@ -348,6 +364,87 @@ describe("WebSocket client routing of the root frames", () => {
     socket.deliver(RESET_FRAME);
     socket.deliver(EVENT_FRAME);
 
+    expect(onEvent).toHaveBeenCalledTimes(1);
+  });
+});
+
+/**
+ * Coverage backfill: `onFileView` was added to the options object and routed
+ * alongside onMeta/onCompletion/onReset/onRootError, but — unlike those four —
+ * arrived with no test of its own. It carries the same two hazards they do, and
+ * the second is the expensive one: a fileView frame is an ANSWER about a path,
+ * not a change to it, so leaking it into `onEvent` would flash the file in the
+ * graph every time someone merely opened it, and the flash would be
+ * indistinguishable from a real write.
+ */
+describe("WebSocket client routing of the fileView frame", () => {
+  it("hands a fileView frame to the file-view callback, parsed", () => {
+    const onFileView = vi.fn();
+    const { socket } = connected(vi.fn(), { onFileView });
+
+    socket.deliver(FILE_VIEW_FRAME);
+
+    expect(onFileView).toHaveBeenCalledTimes(1);
+    expect(onFileView).toHaveBeenCalledWith({
+      path: "src/api/users.ts",
+      mode: "diff",
+      content: "@@ -1 +1 @@\n-old\n+new\n",
+      truncated: false,
+      error: "",
+    });
+  });
+
+  it("never feeds a fileView frame to the event callback", () => {
+    // Reading a file is not touching it: routed on as an event, every click
+    // would light the node up as though the file had just been written.
+    const onEvent = vi.fn();
+    const { socket } = connected(onEvent, { onFileView: vi.fn() });
+
+    socket.deliver(FILE_VIEW_FRAME);
+
+    expect(onEvent).not.toHaveBeenCalled();
+  });
+
+  it("consumes a fileView frame with no callback registered, instead of falling through to the event sink", () => {
+    // A page built before the panel existed still has to survive a daemon that
+    // sends the frame; the frame is swallowed, not reinterpreted as activity.
+    const onEvent = vi.fn();
+    const { socket } = connected(onEvent);
+
+    expect(() => socket.deliver(FILE_VIEW_FRAME)).not.toThrow();
+    expect(onEvent).not.toHaveBeenCalled();
+  });
+
+  it("keeps delivering events after a fileView frame with no file-view callback", () => {
+    const onEvent = vi.fn();
+    const { socket } = connected(onEvent);
+
+    socket.deliver(FILE_VIEW_FRAME);
+    socket.deliver(EVENT_FRAME);
+
+    expect(onEvent).toHaveBeenCalledTimes(1);
+  });
+
+  it("drops a fileView frame that names no file, reaching neither the panel nor the graph", () => {
+    // An answer with no path cannot be matched to the click that asked for it,
+    // and painting it would put one file's diff under another file's name.
+    const onFileView = vi.fn();
+    const onEvent = vi.fn();
+    const { socket } = connected(onEvent, { onFileView });
+
+    expect(() => socket.deliver(BROKEN_FILE_VIEW_FRAME)).not.toThrow();
+    expect(onFileView).not.toHaveBeenCalled();
+    expect(onEvent).not.toHaveBeenCalled();
+  });
+
+  it("does not mistake an activity event for a fileView answer", () => {
+    const onFileView = vi.fn();
+    const onEvent = vi.fn();
+    const { socket } = connected(onEvent, { onFileView });
+
+    socket.deliver(EVENT_FRAME);
+
+    expect(onFileView).not.toHaveBeenCalled();
     expect(onEvent).toHaveBeenCalledTimes(1);
   });
 });

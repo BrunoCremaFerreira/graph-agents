@@ -13,8 +13,8 @@
       <div class="about">
         graph-agents · Gource-style live view
         <span class="keys">
-          scroll: zoom · drag: pan · double-click: auto-fit · ctrl+F: search · F3: next ·
-          ctrl+L: root
+          scroll: zoom · drag: pan · double-click: auto-fit · click: open file · ctrl+F: search ·
+          F3: next · ctrl+L: root
         </span>
       </div>
     </div>
@@ -44,6 +44,18 @@
       </div>
       <div id="root-matches" hidden></div>
       <div id="root-error" hidden></div>
+    </div>
+    <div id="file-view" hidden>
+      <div id="file-view-backdrop"></div>
+      <div id="file-view-panel">
+        <div id="file-view-head">
+          <span id="file-view-path"></span>
+          <span id="file-view-mode"></span>
+          <span id="file-view-truncated" hidden></span>
+          <span id="file-view-hint">esc: close</span>
+        </div>
+        <pre id="file-view-body"></pre>
+      </div>
     </div>
     <script type="module" src="/src/main.ts"></script>
   </body>

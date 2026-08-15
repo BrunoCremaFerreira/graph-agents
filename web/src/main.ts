@@ -225,6 +225,8 @@ function boot(): void {
     },
   );
 
+  // The button and Escape below share one close path; two would drift apart.
+  fileViewHud?.onClose(() => showFileView(closeView(fileView)));
   searchHud?.onQueryChange((query) => showSearch(setQuery(search, query, sim.listNodes())));
   rootHud?.onTextChange((text) => showRoot(setText(rootPrompt, text)));
 

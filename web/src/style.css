@@ -505,11 +505,30 @@ body {
   display: none;
 }
 
-/* Pushed to the far right; the shortcut is a reminder, not a control. */
-#file-view #file-view-hint {
+/*
+ * The visible way out, pushed to the far right of the header. Padded rather
+ * than sized, so the hit area is comfortable while the glyph stays small enough
+ * to read as a control and not as a word in the header. Escape still closes the
+ * panel; the button is what says so without having to be read.
+ */
+#file-view #file-view-close {
   flex: 0 0 auto;
   margin-left: auto;
+  padding: 2px 6px;
+  border: 0;
+  background: none;
   color: #5c6067;
+  /* A button does not inherit the page font on its own. */
+  font-family: inherit;
+  font-size: 16px;
+  line-height: 1;
+  cursor: pointer;
+}
+
+/* Dim until aimed at: the header is a caption, not a toolbar. */
+#file-view #file-view-close:hover,
+#file-view #file-view-close:focus-visible {
+  color: #d5d9df;
 }
 
 /*

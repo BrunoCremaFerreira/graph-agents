@@ -3,12 +3,14 @@
  *
  * Presentation only — no domain logic. What a click asks for and what a late
  * answer is worth lives in {@link ./fileView}, what Escape means in
- * {@link ./fileViewKeys}, and WHAT to paint — rows, line numbers, gutter width,
- * which lines carry syntax tokens — in {@link ./fileDoc}. This module walks a
- * {@link FileDoc} and builds elements. DOM-bound, so it is not unit-tested: keep
- * it that thin, the way {@link ./searchHud} and {@link ./rootHud} are.
+ * {@link ./fileViewKeys}, which click dismisses the panel in
+ * {@link ./fileViewClicks}, and WHAT to paint — rows, line numbers, gutter
+ * width, which lines carry syntax tokens — in {@link ./fileDoc}. This module
+ * walks a {@link FileDoc} and builds elements. DOM-bound, so it is not
+ * unit-tested: keep it that thin, the way {@link ./searchHud} and
+ * {@link ./rootHud} are.
  *
- * Four rules are load-bearing here:
+ * Five rules are load-bearing here:
  *
  *  - **`textContent`, never `innerHTML`.** The body is an arbitrary file from
  *    the observed project — a diff of an HTML template, a hex dump, anything.
@@ -25,8 +27,15 @@
  *    where 20 000 elements are the cost being avoided.
  *  - **An empty line keeps its height from CSS (`min-height`), not from a space
  *    smuggled into its text** — that space used to be copied out with the file.
+ *  - **One delegated listener on the container,** as in {@link ./statusHud} and
+ *    for the same reason: the body is thrown away and rebuilt on every paint, so
+ *    a listener bound to anything inside it would have to be re-bound each time.
+ *    It resolves the clicked element's id and hands it to
+ *    {@link ./fileViewClicks} — whether that click closes anything is not this
+ *    module's call.
  */
 
+import { interpretFileViewClick } from "./fileViewClicks";
 import type { FileViewState } from "./fileView";
 import type { FileDoc, Row } from "./fileDoc";
 import type { FileViewMode } from "./protocol";
@@ -59,6 +68,11 @@ export interface FileViewHud {
    * screen; every other paint is a new file, which starts at its first line.
    */
   render(state: FileViewState, doc: FileDoc, keepScroll: boolean): void;
+  /**
+   * Call `handler` when a click asks for the panel to close, so the caller can
+   * take the one close path Escape already takes.
+   */
+  onClose(handler: () => void): void;
 }
 
 /** Bind the panel to `#file-view` (a header row and a scrollable body). */
@@ -174,6 +188,16 @@ export function createFileViewHud(container: HTMLElement): FileViewHud {
       // A new file starts at its first line; only the colouring repaint of the
       // very text already on screen keeps where it was read to.
       bodyEl.scrollTop = keepScroll ? scroll : 0;
+    },
+
+    onClose(handler: () => void): void {
+      container.addEventListener("click", (event) => {
+        const target = event.target;
+        if (!(target instanceof Element)) return;
+        // `closest` because the click may land on a glyph inside the button.
+        const id = target.closest("[id]")?.id ?? "";
+        if (interpretFileViewClick(id, !container.hidden)) handler();
+      });
     },
   };
 }

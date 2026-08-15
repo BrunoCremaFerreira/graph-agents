@@ -126,6 +126,7 @@ web/src/rootPrompt.ts     # pure: the ctrl+L bar's state (text, completion, disc
 web/src/pick.ts           # pure: which file a click (or the resting pointer) landed on
 web/src/labels.ts         # pure: label size/placement, and which files are named this frame
 web/src/fileView.ts       # pure: the content panel's state (request, adopt, discard, tokens)
+web/src/fileViewClicks.ts # pure: which click closes the panel (never the backdrop)
 web/src/language.ts       # pure: path -> the grammar id, or null (no generic fallback)
 web/src/diffModel.ts      # pure: the unified diff, parsed into numbered rows
 web/src/fileDoc.ts        # pure: what the panel draws — rows, gutter, tokenize requests
@@ -243,7 +244,17 @@ Web MVP implemented and verified end-to-end (TDD).
   and the content is capped at 256 KiB, flagged `truncated`, because it crosses the WebSocket
   whole. **Caveat, unfixed:** that cap is on the text/hex path only — `mode: "diff"` returns
   `git diff` output with no cap at all, so a regenerated dump crosses whole. `MAX_ROWS` bounds
-  what the browser draws; the frame itself is still unbounded.
+  what the browser draws; the frame itself is still unbounded. **The panel closes with Escape
+  or with the close button** in its header — a modal over the whole graph with no visible way
+  out reads as a page that has hung, and the header carries the button alone: the `esc` caption
+  that used to sit beside it was a second thing to read in a row already full of path, mode,
+  language and truncation, and the `×` is the affordance nobody has to read. Which click closes is
+  decided in the pure `fileViewClicks.ts`, the way Escape is decided in `fileViewKeys.ts`: both
+  answer nothing while the panel is closed (a live close handler would swallow clicks meant for
+  the file dots underneath), and the backdrop is deliberately **not** a dismiss target, because
+  a stray click outside would throw away a long read the panel cannot restore. `fileViewHud.ts`
+  binds one delegated listener on the container and stays a painter; both paths run through the
+  same `closeView` in `main.ts`, never two.
 - **The panel colours what it shows, with VS Code's own palette.** Not an imitation: `shiki`
   carries the real TextMate grammars and the Dark+ theme, so `#569CD6` on a keyword is the
   colour VS Code would paint. Five things are load-bearing:
@@ -317,7 +328,7 @@ Web MVP implemented and verified end-to-end (TDD).
   The listener binds every interface, so without the gate anyone who can reach `:8080` could
   list the host's directories and repoint the graph. SSH and VS Code forwarding arrive as
   loopback, so the ordinary remote setup is unaffected.
-- **Frontend** (`web/`): 948/948 vitest green, `tsc` + `vite build` clean. `shiki` (pinned to
+- **Frontend** (`web/`): 957/957 vitest green, `tsc` + `vite build` clean. `shiki` (pinned to
   3.23.0 — 4.x needs Node ≥ 20 and this machine has 18) is the first runtime dependency added
   since `d3-force`; note that `npm install` under npm 10 strips the `libc` fields from
   `package-lock.json`, so check `git diff` on the lock after touching dependencies. Gource-style WebGL
@@ -423,7 +434,9 @@ Web MVP implemented and verified end-to-end (TDD).
   playwright, no selenium — and a headless screenshot of an animated force layout proves
   nothing). Outstanding: whether the bottom-right status panel clears `#context` and `#hud` at
   narrow window widths, and, for the viewer, the gutter's alignment on *wrapped* lines, the new
-  `#file-view-lang` span at narrow widths, and how the stripes read on a real monitor. For the
+  `#file-view-lang` span at narrow widths, how the stripes read on a real monitor, and whether
+  the close button's padded hit area is comfortable to aim at and stays on the row once a long
+  path has squeezed the header at narrow window widths. For the
   read ring: whether violet reads clearly against the write flash at real zoom levels, whether
   24 rings at once is calm or noisy during a read burst, whether the 0.75 tint leaves enough
   amber on a file read right after it was written, and how the ring's pulse sits next to the

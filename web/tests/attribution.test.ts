@@ -39,7 +39,14 @@ function event(
   path: string,
   overrides: Partial<AgentEvent> = {},
 ): AgentEvent {
-  const color = type === "A" ? "33FF33" : type === "M" ? "FFAA00" : "FF3333";
+  const color =
+    type === "A"
+      ? "33FF33"
+      : type === "M"
+        ? "FFAA00"
+        : type === "R"
+          ? "AA66FF"
+          : "FF3333";
   return {
     ts: 1000,
     agent: "sess-1",
@@ -102,6 +109,21 @@ describe("attribution monitor: what proves capture is alive", () => {
     const monitor = createAttributionMonitor();
 
     monitor.observe(event(type, "src/app.py", { agent: "worker-7" }));
+
+    expect(monitor.attributed()).toBe(true);
+  });
+
+  it("accepts a read as proof too, since reading a file is a tool call like any other", () => {
+    // Guard, not a new rule: the monitor asks "did a hook ever carry an agent
+    // id?", and the operation kind has never been part of that answer. It is
+    // pinned because `R` is the fourth kind and the one an agent emits most, so
+    // a session where the agent only reads before it writes must light the
+    // "hooks are installed" state at the FIRST read, not minutes later at the
+    // first edit -- otherwise the page accuses a correctly hooked project of
+    // having no hooks for as long as the agent is still exploring.
+    const monitor = createAttributionMonitor();
+
+    monitor.observe(event("R", "src/app.py", { agent: "worker-7", origin: "hook" }));
 
     expect(monitor.attributed()).toBe(true);
   });

@@ -7,8 +7,16 @@
  * `developer-frontend`.
  */
 
-/** Operation kind: Added, Modified, Deleted. */
-export type EventType = "A" | "M" | "D";
+/**
+ * Operation kind: Added, Modified, Deleted, Read.
+ *
+ * `R` is not a change — nothing on disk moved — but it is what an agent spends
+ * most of its tool calls doing, and a graph that ignores it shows a dead tree
+ * while an agent walks a package it never writes to. It travels the same socket
+ * with the violet `AA66FF`, and every layer downstream keeps it apart from the
+ * three kinds that DO alter the project.
+ */
+export type EventType = "A" | "M" | "D" | "R";
 
 /**
  * What produced the event.
@@ -50,8 +58,15 @@ export interface AgentEvent {
   label: string;
 }
 
-/** The three valid operation kinds, used for runtime validation. */
-const EVENT_TYPES: ReadonlySet<string> = new Set<EventType>(["A", "M", "D"]);
+/**
+ * The four valid operation kinds, used for runtime validation.
+ *
+ * The set stays CLOSED: `R` was added as a member, not by relaxing the check
+ * into "any single letter". A lowercase `r`, a `READ`, or a stray `"R "` from a
+ * daemon speaking another dialect must still be refused, or the junk reaches the
+ * simulation and grows a node in the graph.
+ */
+const EVENT_TYPES: ReadonlySet<string> = new Set<EventType>(["A", "M", "D", "R"]);
 
 /** Valid origins. Anything else on the wire degrades to `"hook"`. */
 const EVENT_ORIGINS: ReadonlySet<string> = new Set<EventOrigin>(["hook", "seed", "watch"]);

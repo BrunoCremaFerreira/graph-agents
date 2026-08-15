@@ -28,6 +28,18 @@ export interface SimNode {
   opacity: number;
   /** Hex color (no `#`) carried from the last event that touched the node. */
   color: string;
+  /**
+   * Reading level in [0, 1]: ~1 right after an agent read the file, decaying to
+   * 0 (more slowly than {@link highlight}) as nobody looks at it again.
+   *
+   * A CHANNEL OF ITS OWN, deliberately. An agent reads roughly ten times more
+   * often than it writes, and very often reads back the file it has just
+   * edited: were a read to reuse `highlight`/`color`, the amber of that write
+   * would be repainted violet half a second later, and the one thing the graph
+   * exists to show — who changed what — would be erased by the noisiest event
+   * on the wire. Directories keep this at 0: only files are read.
+   */
+  reading: number;
 }
 
 /** On-screen actor derived from an event's `agent`. */
@@ -83,6 +95,21 @@ export interface Simulation {
 const ACTOR_DECAY_PER_SEC = 0.08;
 const HIGHLIGHT_DECAY_PER_SEC = 0.9;
 const FILE_OPACITY_DECAY_PER_SEC = 0.03;
+/**
+ * Strictly slower than {@link HIGHLIGHT_DECAY_PER_SEC}: reading is a sustained
+ * act, not an instant one, and reads arrive in bursts. A write's flash is a
+ * blink; the violet has to linger while the agent works through the file, or a
+ * burst of reads is a strobe nobody can follow.
+ */
+const READING_DECAY_PER_SEC = 0.5;
+
+/**
+ * Neutral colour for a node that no event has ever flashed — a directory, or a
+ * file that entered the tree because somebody READ it. `color` is the flash
+ * colour, and it is only ever mixed in proportion to `highlight`, which is 0 for
+ * both; a read must not leave an author's colour behind on a file nobody wrote.
+ */
+const NEUTRAL_COLOR = "888888";
 
 /** Split a path into its ancestor directories, innermost last. */
 function ancestorDirs(path: string): string[] {
@@ -122,10 +149,18 @@ class SimulationImpl implements Simulation {
       return;
     }
 
-    // A or M: materialize every ancestor directory, then the file itself.
+    // A, M or R: materialize every ancestor directory, then the file itself.
+    // A read reaches the same tree — a file being looked at is real and has to
+    // appear — but through its own branch below.
     for (const dir of ancestorDirs(event.path)) {
       this.ensureDir(dir);
     }
+
+    if (event.type === "R") {
+      this.readFile(event.path);
+      return;
+    }
+
     this.touchFile(event.path, event.color, event.origin === "seed");
   }
 
@@ -139,6 +174,7 @@ class SimulationImpl implements Simulation {
     for (const node of this.nodes.values()) {
       if (node.kind !== "file") continue;
       node.highlight = clamp01(node.highlight - HIGHLIGHT_DECAY_PER_SEC * dtSeconds);
+      node.reading = clamp01(node.reading - READING_DECAY_PER_SEC * dtSeconds);
       node.opacity = clamp01(node.opacity - FILE_OPACITY_DECAY_PER_SEC * dtSeconds);
     }
   }
@@ -185,7 +221,8 @@ class SimulationImpl implements Simulation {
       parent: parentOf(path),
       highlight: 0,
       opacity: 1,
-      color: "888888",
+      color: NEUTRAL_COLOR,
+      reading: 0,
     });
   }
 
@@ -206,6 +243,9 @@ class SimulationImpl implements Simulation {
       existing.highlight = highlight;
       existing.opacity = opacity;
       existing.color = color;
+      // `reading` is deliberately untouched: the two channels are independent in
+      // BOTH directions, so saving a file the agent still has open does not
+      // extinguish its violet.
       return;
     }
     this.nodes.set(path, {
@@ -215,6 +255,37 @@ class SimulationImpl implements Simulation {
       highlight,
       opacity,
       color,
+      reading: 0,
+    });
+  }
+
+  /**
+   * Mark a file as being read.
+   *
+   * Everything here is about what it does NOT do. It never goes through
+   * {@link touchFile}: `highlight` and `color` are left exactly as they were, so
+   * a read cannot repaint the flash of a write that is half a second old. It
+   * raises `opacity` because a file dimmed by idle decay has become interesting
+   * again — somebody is looking at it — and a file the tree has never seen
+   * enters COLD: it is real, but nobody changed it, so it gets no flash and no
+   * author's colour.
+   */
+  private readFile(path: string): void {
+    const existing = this.nodes.get(path);
+    if (existing) {
+      existing.kind = "file";
+      existing.reading = 1;
+      existing.opacity = 1;
+      return;
+    }
+    this.nodes.set(path, {
+      path,
+      kind: "file",
+      parent: parentOf(path),
+      highlight: 0,
+      opacity: 1,
+      color: NEUTRAL_COLOR,
+      reading: 1,
     });
   }
 

@@ -57,7 +57,7 @@ Data flows through five stages. Keep this separation when adding code.
 2. **Capture** — two sources, deliberately (see "Conventions & gotchas"):
    - `.claude/settings.json` hooks fire `hooks/emit_event.py` and carry the **agent id**.
      `PostToolUse` on `Write` → `A`/`M`, on `Edit`/`MultiEdit` → `M`, on `Bash` → parse the
-     command for `rm`/`rmdir`/`mv`/`mkdir`/`touch`/`cp`.
+     command for `rm`/`rmdir`/`mv`/`mkdir`/`touch`/`cp`, on `Read` → `R`.
    - `daemon/watcher.py` (inotify via watchdog) reports **every** change on disk, with no
      idea who caused it.
 3. **Normalize + aggregate** — `daemon/server.py` owns the shared state: the set of seen
@@ -71,9 +71,13 @@ Data flows through five stages. Keep this separation when adding code.
 
 ### Gource custom log format
 Pipe-delimited: `timestamp|user|type|path|color`
-- `type` is `A`, `M`, or `D`
-- `color` (optional, hex, no `#`) — we set it by op type: `A`→`33FF33`, `M`→`FFAA00`, `D`→`FF3333`
+- `type` is `A`, `M`, `D`, or `R`
+- `color` (optional, hex, no `#`) — we set it by op type: `A`→`33FF33`, `M`→`FFAA00`,
+  `D`→`FF3333`, `R`→`AA66FF`
 - Example: `1754870400|agent-worker|M|src/api/users.ts|FFAA00`
+- `R` (read) is ours, not Gource's: the file was *opened*, nothing about the tree changed.
+  It rides the same wire and is drawn as a violet pulsing ring, but it mutates no state —
+  see "A read is not a change".
 
 ### Agent attribution (the hard part)
 "Show what *each* agent is doing" means mapping every op to an actor. What the hook JSON
@@ -126,6 +130,7 @@ web/src/language.ts       # pure: path -> the grammar id, or null (no generic fa
 web/src/diffModel.ts      # pure: the unified diff, parsed into numbered rows
 web/src/fileDoc.ts        # pure: what the panel draws — rows, gutter, tokenize requests
 web/src/highlight.ts      # the ONE place that names shiki (lazy wasm + 22 literal imports)
+web/src/readMarker.ts     # the violet ring a file wears while an agent is reading it
 web/src/statusList.ts     # pure: the uncommitted-changes panel (order, cap, is it visible)
 web/src/searchKeys.ts     # pure: what ctrl+F / F3 / Esc mean
 web/src/*Hud.ts           # thin DOM painters: context caption, event list, attribution, search
@@ -163,6 +168,29 @@ tail -f /tmp/claude-gource.pipe | gource --realtime --log-format custom \
   forever, a missing one is filled in by the watcher milliseconds later.
 - **An event with `agent: ""` must never create an actor** — seeded files and unattributed
   changes are real, but nobody did them on camera.
+- **A read is not a change.** `R` travels the same wire as `A`/`M`/`D` and must touch none of
+  the state they touch. In the daemon it goes through `_broadcast_transient`, never
+  `_publish`: not into `known_paths` (Read-then-Edit is the commonest thing an agent does, so
+  a read that marks the path as seen turns the very next `Write` into a modification of a node
+  no browser was ever shown), not into `_recent` (a reconnecting client would replay stale
+  read flashes — a lie about "right now" — and twenty reads would push the real changes out of
+  a finite ring), and not into `_hook_paths` (a read has no watcher echo to suppress, and
+  stamping it would swallow the genuine write that follows). In the browser, `reading` is a
+  channel of its own on `SimNode`, so a read never repaints the amber flash of a write half a
+  second old. What a read *does* still do is refresh the active agent: it is evidence of who
+  is at work, so the watcher's next change is credited to whoever was reading.
+- **Reads are hook-only, by nature.** The watcher cannot see a file being opened — `atime` is
+  unreliable under `relatime` and it does not subscribe to access events — so the "two capture
+  sources" rule above has no second half here. With no hooks installed there is no read glow
+  at all, only the silence that looks like a healthy setup with nobody reading.
+- **A read path is held to a stricter rule than a write path.** `_read_path` refuses anything
+  that does not stay under the observed root, `..` segments included, where `_make_relative`
+  hands an out-of-root absolute path straight back. The asymmetry is deliberate: a stray write
+  names a real change and the watcher corrects the picture moments later, while a read has no
+  such correction — nothing happened on disk — and agents read `/etc`, `~/.claude`,
+  `node_modules` and other checkouts all day. The check is lexical (`normpath`, then a
+  boundary test) because `normalize_event` is pure and runs on the hot path; symlinks
+  therefore still pass, and resolving them belongs to `resolve_inside` in the daemon.
 - If you fork/embed Gource's C++ source later, note it is **GPLv3** — that affects distribution.
 
 ## Agents & TDD workflow
@@ -189,7 +217,7 @@ asking the tester for the RED tests, not by asking a developer to implement blin
 
 Web MVP implemented and verified end-to-end (TDD).
 
-- **Backend** (`graphagents/`, `hooks/`, `daemon/`): 503/503 pytest green. Hook is stdlib-only
+- **Backend** (`graphagents/`, `hooks/`, `daemon/`): 542/542 pytest green. Hook is stdlib-only
   and exits 0 on garbage input. Daemon seeds the project tree at boot, ingests hook events on
   a Unix socket, watches the filesystem, and serves `web/dist` over HTTP **and** broadcasts
   events over WebSocket (`/ws`) on a single port (`:8080`) — one forwarded port is enough for
@@ -289,7 +317,7 @@ Web MVP implemented and verified end-to-end (TDD).
   The listener binds every interface, so without the gate anyone who can reach `:8080` could
   list the host's directories and repoint the graph. SSH and VS Code forwarding arrive as
   loopback, so the ordinary remote setup is unaffected.
-- **Frontend** (`web/`): 901/901 vitest green, `tsc` + `vite build` clean. `shiki` (pinned to
+- **Frontend** (`web/`): 948/948 vitest green, `tsc` + `vite build` clean. `shiki` (pinned to
   3.23.0 — 4.x needs Node ≥ 20 and this machine has 18) is the first runtime dependency added
   since `d3-force`; note that `npm install` under npm 10 strips the `libc` fields from
   `package-lock.json`, so check `git diff` on the lock after touching dependencies. Gource-style WebGL
@@ -318,6 +346,31 @@ Web MVP implemented and verified end-to-end (TDD).
   under it too. Only `pointerType === "mouse"` counts — a touchscreen has no hover, and a
   finger would leave a name stuck where it last landed. The cursor follows (`pointer` over a
   file, `grab` otherwise, `grabbing` untouched during a drag).
+- **A file an agent is reading wears a violet ring.** The fourth event type, `R`, exists
+  because the graph used to stay dark through the half of an agent's work that explains the
+  other half: it read six files, then wrote one, and only the write was on camera. A write is
+  a *flash that decays*; a read is a *ring that pulses* — a different shape, not a different
+  shade, so the two never blur together through the bloom. Five things carry it:
+  - **`reading` is a channel of its own** on `SimNode`, decayed at `READING_DECAY_PER_SEC`
+    (0.5/s against the highlight's 0.9/s — reads arrive in bursts and need to stay legible).
+    `applyEvent` routes `R` to `readFile` *before* `touchFile` is ever reached, so a read
+    raises `reading` and `opacity` and never touches `highlight` or `color`.
+  - **A file first seen by a read enters cold** — no highlight, the neutral colour
+    directories get. A read must never masquerade as a write.
+  - **The ring is sized in pixels** via `labelMetrics.worldPerPixel`, like every label: the
+    camera spans halfHeight 2..4000, so a world-sized ring is either sub-pixel or
+    screen-filling. It lives in the main scene, not `overlayScene` — unlike text, a glow
+    through the bloom is exactly what is wanted — with 24 pooled sprites whose slots stay
+    bound to a path, and `updateReadMarkers` runs after `updateLabels` because it needs that
+    frame's metrics.
+  - **The read beam is short** (0.6 s against the write beam's 1.2). `MAX_BEAMS` is a fixed
+    512 and reads come in bursts, so a long-lived read beam would crowd the write beams out
+    of the buffer.
+  - **Reads stay out of the recent-changes list.** That panel is a list of *changes*, and an
+    agent reads roughly ten times more than it writes, so reads would push every real edit off
+    the top within seconds. The drop sits before the fold, so a read cannot inflate the top
+    entry's count either. The label candidates carry `max(highlight, reading)`, which is what
+    names a file while it is being read with `labels.ts` unchanged.
 - **Search (`ctrl+F`)** follows the same split: every decision is pure and tested —
   `search.ts` (substring match on the file name, or on the whole path once the query
   contains `/`; the walk `F3` takes over the matches; and `frameMatches`, which returns the
@@ -345,7 +398,12 @@ Web MVP implemented and verified end-to-end (TDD).
   outline. Do not resize the bloom pass by hand in `resize()` — the composer already sizes
   its passes in drawing-buffer pixels, and re-setting them in CSS pixels halves them on
   HiDPI screens.
-- **Integration** (verified against a live daemon): tree seeded on connect; a Write flashes
+- **Integration** (verified against a live daemon): for reads, driven through the real
+  `hooks/emit_event.py` over a scratch project — the `R` frame reaches a client watching at
+  that moment, violet, relative to the root, carrying the subagent's id *and* its
+  `agent_type`; a read of a file outside the root produces no event at all; a `Write` after a
+  `Read` of the same path is still an `A`; and no `R` survives in the replay handed to a
+  client that connects afterwards, while the real write does. Also: tree seeded on connect; a Write flashes
   once across both channels; `cp *.md docs/` reports each file actually copied, credited to
   the agent; `rm -rf docs/` prunes the subtree; a non-agent edit appears with no actor; the
   meta frame arrives first and a branch switch is pushed without reconnecting; real captured
@@ -365,7 +423,17 @@ Web MVP implemented and verified end-to-end (TDD).
   playwright, no selenium — and a headless screenshot of an animated force layout proves
   nothing). Outstanding: whether the bottom-right status panel clears `#context` and `#hud` at
   narrow window widths, and, for the viewer, the gutter's alignment on *wrapped* lines, the new
-  `#file-view-lang` span at narrow widths, and how the stripes read on a real monitor.
+  `#file-view-lang` span at narrow widths, and how the stripes read on a real monitor. For the
+  read ring: whether violet reads clearly against the write flash at real zoom levels, whether
+  24 rings at once is calm or noisy during a read burst, whether the 0.75 tint leaves enough
+  amber on a file read right after it was written, and how the ring's pulse sits next to the
+  search ring when both land on the same node. One of those is a known risk, not just an
+  unknown: the inner ring is a 2.24 px stroke on a 64 px texture rasterised with
+  `generateMipmaps = false` and `LinearFilter` (the label doctrine), so drawn much smaller
+  than 64 px it is sampled sparsely and can fade out — degrading the read marker into a single
+  thin ring, which is precisely the shape it exists not to be. If that is what a real screen
+  shows, thicken the inner stroke or rasterise the texture larger; the tests pin only
+  relations between the radii, never their values, so retuning is free.
 
 Run: `GRAPHAGENTS_PROJECT_ROOT=/path/to/observed ./start.sh`. Point the root at the project
 you want to *watch*, not at `graph-agents` — or start anywhere and switch with `ctrl+L` in the

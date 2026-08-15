@@ -27,11 +27,19 @@
 import { createEventLog, splitPath, type LogEntry } from "./eventLog";
 import type { AgentEvent, EventType } from "./protocol";
 
-/** Operation glyph. The single splash of colour in an otherwise grey HUD. */
-const GLYPH: Record<EventType, string> = { A: "+", M: "~", D: "−" };
+/**
+ * Operation glyph. The single splash of colour in an otherwise grey HUD.
+ *
+ * `R` is here for completeness only, and is unreachable: `eventLog.push` drops
+ * every read before it can become an entry, because this panel lists CHANGES
+ * and an agent reads roughly ten times more often than it writes. The tables
+ * stay typed as `Record<EventType, ...>` so tsc keeps proving they cover every
+ * kind on the wire rather than quietly rendering a new one as "?".
+ */
+const GLYPH: Record<EventType, string> = { A: "+", M: "~", D: "−", R: "·" };
 
 /** Class suffix per operation, so CSS owns the actual colours. */
-const OP_CLASS: Record<EventType, string> = { A: "a", M: "m", D: "d" };
+const OP_CLASS: Record<EventType, string> = { A: "a", M: "m", D: "d", R: "r" };
 
 export interface EventHud {
   /** Offer an event to the list. Dropped events (seed) change nothing. */

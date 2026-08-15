@@ -87,3 +87,61 @@ describe("parseEvent", () => {
     ).toBeNull();
   });
 });
+
+/**
+ * A fourth operation kind: `R`, an agent READING a file.
+ *
+ * The defect it exists for is that reading is most of what an agent does, and
+ * none of it was visible: an agent could spend a minute walking a package it
+ * never wrote a byte to, and the graph showed a dead tree with a figure standing
+ * still. The daemon now emits `R` with the violet `AA66FF`, on the same socket
+ * as everything else.
+ *
+ * The validation is the part worth pinning here. `EVENT_TYPES` is a closed set
+ * on purpose, and adding a member to it is exactly the change that tends to be
+ * made by loosening the check instead of widening the set -- after which a
+ * status frame, a typo, or a lowercase `r` from a daemon speaking some other
+ * dialect all reach the simulation and grow a node in the graph.
+ */
+describe("parseEvent: the read event", () => {
+  it("parses a read event, keeping its type as R", () => {
+    const raw = { ...validRaw(), type: "R", color: "AA66FF", path: "src/api/users.ts" };
+
+    const parsed = parseEvent(raw);
+
+    expect(parsed).not.toBeNull();
+    const event = parsed as AgentEvent;
+    expect(event.type).toBe("R");
+    expect(event.color).toBe("AA66FF");
+    expect(event.path).toBe("src/api/users.ts");
+  });
+
+  it("carries agent, timestamp, origin and label through a read exactly as through a write", () => {
+    const parsed = parseEvent({
+      ts: 1754870400.5,
+      agent: "sub-42",
+      type: "R",
+      path: "docs/guide.md",
+      color: "AA66FF",
+      origin: "watch",
+      label: "developer-tester",
+    });
+
+    expect(parsed).toMatchObject({
+      ts: 1754870400.5,
+      agent: "sub-42",
+      path: "docs/guide.md",
+      origin: "watch",
+      label: "developer-tester",
+    });
+  });
+
+  it.each(["X", "r", "RR", "R ", "READ", ""])(
+    "still returns null for the unknown type %j, so the new member did not open the gate",
+    (type) => {
+      const raw = { ...validRaw(), type };
+
+      expect(parseEvent(raw)).toBeNull();
+    },
+  );
+});

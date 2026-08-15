@@ -150,10 +150,16 @@ def test_bash_mv_reports_origin_as_deleted():
     assert event.path == "old.txt"
 
 
-# --- 4. Irrelevant tools produce no event ----------------------------------
+# --- 4. Tools that name no single concrete path produce no event -----------
 
-@pytest.mark.parametrize("tool_name", ["Read", "Grep", "Glob", "WebFetch"])
-def test_irrelevant_tools_return_none(tool_name):
+@pytest.mark.parametrize("tool_name", ["Grep", "Glob", "WebFetch"])
+def test_tools_that_pin_down_no_single_path_return_none(tool_name):
+    # Not "everything that is not a write": `Read` used to be on this list and
+    # is now an event of its own (`R`, violet -- see tests/test_read_events.py).
+    # What these three still have in common is that none of them names one
+    # concrete file in the observed tree: a Grep or a Glob spans a set the
+    # parser cannot enumerate, and a WebFetch touches no file at all. The same
+    # rule keeps `_parse_bash` silent over a glob.
     hook = _hook(tool_name, {"file_path": f"{ROOT}/src/app.py"})
 
     assert normalize_event(hook, known_paths=set(), project_root=ROOT) is None

@@ -80,6 +80,14 @@ export function createEventLog(max?: number): EventLog {
       if (event === null || typeof event !== "object") return false;
       if (typeof event.path !== "string") return false;
       if (event.origin === "seed") return false;
+      // A read is not a change, and this list is a list of CHANGES. An agent
+      // reads roughly ten times more often than it writes, so accepting `R`
+      // would push every real edit off the top within seconds — and, since
+      // repeats fold against the TOP entry only, a read of the file just saved
+      // would either inflate that entry's count with work that changed nothing
+      // or open a line of its own above it. Dropped before the fold, so the list
+      // is left byte for byte as the read found it.
+      if (event.type === "R") return false;
 
       const top = list[0];
       if (top && top.path === event.path && top.type === event.type) {

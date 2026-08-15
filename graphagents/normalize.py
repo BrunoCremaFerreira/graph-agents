@@ -16,6 +16,7 @@ Design notes:
 
 from __future__ import annotations
 
+import os.path
 import shlex
 import time
 from dataclasses import dataclass
@@ -24,11 +25,15 @@ from dataclasses import dataclass
 _OP_ADDED = "A"
 _OP_MODIFIED = "M"
 _OP_DELETED = "D"
+#: A file an agent read. Not a change to the tree -- see `_read_path` and
+#: :meth:`daemon.server.EventHub._broadcast_transient` for what that costs.
+_OP_READ = "R"
 
 _COLOR_BY_TYPE = {
     _OP_ADDED: "33FF33",
     _OP_MODIFIED: "FFAA00",
     _OP_DELETED: "FF3333",
+    _OP_READ: "AA66FF",
 }
 
 # Where an event came from. The frontend reads this to decide how loudly to draw
@@ -53,10 +58,11 @@ class Event:
         agent: Actor **identity** -- the hook's ``agent_id`` when a subagent made
             the call, else its ``session_id``. See :func:`actor_of`.
         type: Operation kind, one of ``"A"`` (added), ``"M"`` (modified),
-            ``"D"`` (deleted).
+            ``"D"`` (deleted) or ``"R"`` (read -- the file was opened, nothing
+            about the tree changed).
         path: Path relative to the observed project root.
         color: Hex color WITHOUT a leading ``#`` (A->33FF33, M->FFAA00,
-            D->FF3333).
+            D->FF3333, R->AA66FF).
         origin: What produced the event -- ``"hook"`` (a Claude tool call),
             ``"seed"`` (the tree snapshot taken at boot) or ``"watch"`` (the
             filesystem watcher).
@@ -225,10 +231,16 @@ def _resolve_operation(
             return None
         return _OP_MODIFIED, rel
 
+    if tool_name == "Read":
+        rel = _read_path(tool_input, project_root)
+        if rel is None:
+            return None
+        return _OP_READ, rel
+
     if tool_name == "Bash":
         return _parse_bash(tool_input, project_root)
 
-    # Read, Grep, Glob, WebFetch, ... -> nothing to visualize.
+    # Grep, Glob, WebFetch, ... -> nothing to visualize.
     return None
 
 
@@ -240,6 +252,60 @@ def _relative_file_path(
     if not isinstance(file_path, str) or not file_path:
         return None
     return _make_relative(file_path, project_root)
+
+
+def _read_path(tool_input: dict, project_root: str | None) -> str | None:
+    """The file a Read touched, relative to the root, or ``None`` if it is outside it.
+
+    Deliberately NOT :func:`_make_relative`, which hands an absolute path that is
+    not under the root straight back, unchanged. That is survivable for a write:
+    it names a real change, and the watcher corrects the picture moments later.
+    A read has no such correction, because nothing happened on disk -- and agents
+    read ``/etc``, ``~/.claude``, ``node_modules`` and other checkouts all day, so
+    the same leniency would hang permanent junk nodes off the top of the tree.
+
+    Hence: a path is accepted only when it lies strictly *under* the root, on a
+    path boundary -- comparing the raw prefix would file
+    ``/home/x/project-other/a.py`` inside ``/home/x/project``. The root itself is
+    refused too: the tree has no node for its own root.
+
+    A prefix test alone is not enough, because ``..`` walks back out through it:
+    ``<root>/../other/a.py`` starts with the root and still leaves it, and a
+    relative ``../other/a.py`` or ``src/../../other/a.py`` never had a prefix to
+    test. So the path is collapsed with :func:`os.path.normpath` FIRST and the
+    boundary is checked on the result -- for a relative path that check *is* the
+    leading ``..`` the collapse leaves behind. It is purely lexical on purpose:
+    this function is pure and hot, and it must not touch the disk. Symlinks therefore still get through; resolving them is
+    ``resolve_inside``'s job in the daemon, where a ``stat`` is affordable and
+    the path arrives from the network.
+
+    The collapsed form is what gets returned, so ``src/../a.py`` and ``a.py``
+    light up ONE node instead of two spellings of the same file. Note ``..`` is
+    only an escape as a whole segment: ``..hidden.py`` and ``a..b.py`` are
+    ordinary names and pass through untouched.
+    """
+    file_path = tool_input.get("file_path")
+    if not isinstance(file_path, str) or not file_path.strip():
+        return None
+
+    raw = file_path.strip()
+    root = os.path.normpath(project_root) if project_root else ""
+
+    if raw.startswith("/"):
+        if not root.startswith("/"):
+            return None
+        absolute = os.path.normpath(raw)
+        if not absolute.startswith(root.rstrip("/") + "/"):
+            return None
+        return absolute[len(root.rstrip("/")) + 1:] or None
+
+    # Relative: no root to join it to (there may not even be one), but none is
+    # needed -- a relative path escapes exactly when collapsing it leaves a
+    # leading `..`, so `src/../../other/a.py` is caught as `../other/a.py`.
+    relative = os.path.normpath(raw)
+    if relative == os.pardir or relative.startswith(os.pardir + "/"):
+        return None
+    return None if relative == os.curdir else relative
 
 
 def _parse_bash(

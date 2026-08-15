@@ -55,6 +55,7 @@ import {
 } from "./view";
 import { frameMatches, type SearchFrame } from "./search";
 import { createSearchMarkerCanvas } from "./searchMarker";
+import { createReadMarkerCanvas } from "./readMarker";
 import {
   pickFile,
   hoverTarget,
@@ -111,9 +112,68 @@ interface FileLabelSlot {
   path: string;
 }
 
+/**
+ * One reusable violet ring for a file being read.
+ *
+ * Pooled like {@link FileLabelSlot}, and the slot stays with its path while the
+ * file is still being read. Every sprite shares ONE texture (the rings are the
+ * same shape in the same colour), so a slot changing hands costs a position and
+ * a scale, never a canvas.
+ */
+interface ReadMarkerSlot {
+  sprite: Sprite;
+  /** Path currently ringed, or `""` when the slot is parked. */
+  path: string;
+}
+
+/** What one file being read needs for its ring: where it is, and how strongly. */
+interface ReadCandidate {
+  path: string;
+  reading: number;
+  x: number;
+  y: number;
+}
+
 const MAX_BEAMS = 512;
 const BEAM_LIFE_SECONDS = 1.2;
 const DIR_COLOR = 0x9aa0a6;
+
+/**
+ * Colour of a file being read, the violet the daemon puts on the wire (AA66FF).
+ *
+ * It is a hue no operation owns — `A` is green, `M` orange, `D` red, a match
+ * cyan and a directory grey — because a read must never be mistaken for a change
+ * to the file it lands on.
+ */
+const READ_COLOR = 0xaa66ff;
+/** How far a fully-read file's dot is dragged toward {@link READ_COLOR}. */
+const READ_TINT = 0.75;
+/** Extra point size, in device pixels, at `reading === 1`. */
+const READ_SIZE_BOOST = 4;
+/**
+ * Life of a read beam, in seconds — a fraction of {@link BEAM_LIFE_SECONDS}.
+ *
+ * Load-bearing, not taste. Reads arrive in bursts and {@link MAX_BEAMS} is a
+ * fixed 512: read beams that lived as long as a write's would fill the buffer
+ * and push the writes — the events the graph exists to show — out of it.
+ */
+const READ_BEAM_LIFE_SECONDS = 0.6;
+/**
+ * How many read rings can be on screen at once.
+ *
+ * Bounded like the file-label pool, and for the same reason: a real project has
+ * hundreds of files and an agent can read dozens of them in a second, so a
+ * sprite per node is not an option. Slots stay bound to their path while the
+ * file is still being read, so a new read does not shuffle every ring.
+ */
+const MAX_READ_MARKERS = 24;
+/** Diameter of a read ring at `reading === 1`, in DEVICE pixels. */
+const READ_MARKER_PIXELS = 34;
+/** Radians per second of the read ring's pulse, and its depth. */
+const READ_PULSE_RATE = 4;
+const READ_PULSE_DEPTH = 0.22;
+/** Below this, the ring is not worth a slot another file could use. */
+const READ_MARKER_MIN = 0.02;
 /** Height of the agent figure in world units (a file dot is a few px wide). */
 const AVATAR_WORLD_HEIGHT = 7;
 
@@ -250,6 +310,10 @@ export class GourceRenderer {
   private readonly labelCandidates: LabelCandidate[] = [];
   /** Scratch for the slot assignment below; cleared and refilled each frame. */
   private readonly chosenByPath = new Map<string, LabelCandidate>();
+  /** The violet rings, and the two scratch containers that hand them out. */
+  private readonly readMarkers: ReadMarkerSlot[] = [];
+  private readonly readCandidates: ReadCandidate[] = [];
+  private readonly readByPath = new Map<string, ReadCandidate>();
   private readonly beams: Beam[] = [];
 
   /**
@@ -369,6 +433,19 @@ export class GourceRenderer {
     this.searchMarker.visible = false;
     // Main scene, not `overlayScene`: the ring is meant to bloom.
     this.scene.add(this.searchMarker);
+
+    // One texture for the whole pool; the sprites differ only in where they sit,
+    // how big they are and how bright. Main scene as well: unlike text, a glow
+    // through the bloom is exactly what a read should look like.
+    const readTexture = makeReadMarkerTexture();
+    for (let i = 0; i < MAX_READ_MARKERS; i += 1) {
+      const sprite = new Sprite(
+        new SpriteMaterial({ map: readTexture, transparent: true, depthTest: false, opacity: 0 }),
+      );
+      sprite.visible = false;
+      this.scene.add(sprite);
+      this.readMarkers.push({ sprite, path: "" });
+    }
 
     this.bindInput();
     this.resize();
@@ -569,8 +646,20 @@ export class GourceRenderer {
       }
     }
     // The model already flashed the file's color/highlight; we add the beam.
+    // A read fires one too — the figure sliding to what the agent is looking at
+    // is the whole point of the view — but in the read's violet rather than the
+    // actor's colour (the line must not claim authorship of a change nobody
+    // made) and with a life a fraction as long, so bursts of reads cannot fill
+    // the fixed beam buffer at the writes' expense.
+    const reading = event.type === "R";
     if (this.beams.length < MAX_BEAMS) {
-      this.beams.push({ actor: event.agent, target: event.path, color: actor.color, age: 0, life: BEAM_LIFE_SECONDS });
+      this.beams.push({
+        actor: event.agent,
+        target: event.path,
+        color: reading ? READ_COLOR : actor.color,
+        age: 0,
+        life: reading ? READ_BEAM_LIFE_SECONDS : BEAM_LIFE_SECONDS,
+      });
     }
   }
 
@@ -696,8 +785,9 @@ export class GourceRenderer {
     // positioned from the layout that moved this frame. Doing this only on
     // topology changes is what left directory names stranded behind their nodes.
     this.updateLabels(model);
-    // After the labels: the ring is sized from the same per-frame metrics.
+    // After the labels: the rings are sized from the same per-frame metrics.
     this.updateSearchMarker();
+    this.updateReadMarkers(model);
 
     this.composer.render();
     // Text goes on top of the finished image, never through the bloom: keeping
@@ -782,8 +872,16 @@ export class GourceRenderer {
         const base = fileColor(node.path);
         const flash = hexToInt(node.color) ?? base;
         this.scratchColor.setHex(base).lerp(tmpColor.setHex(flash), node.highlight);
+        // The read is blended AFTER the write's flash and on its own channel, so
+        // a file that was just edited and is now being read shows both: the
+        // amber is still in the mix, tinted violet in proportion to `reading`.
+        // The tint stops short of 1 for that reason — a read never fully repaints
+        // the colour of a change.
+        if (node.reading > 0) {
+          this.scratchColor.lerp(tmpColor.setHex(READ_COLOR), node.reading * READ_TINT);
+        }
         this.scratchColor.multiplyScalar(0.35 + 0.65 * node.opacity);
-        sizeArr[idx] = (6 + node.highlight * 8) * dpr;
+        sizeArr[idx] = (6 + node.highlight * 8 + node.reading * READ_SIZE_BOOST) * dpr;
       }
       colArr[idx * 3] = this.scratchColor.r;
       colArr[idx * 3 + 1] = this.scratchColor.g;
@@ -970,6 +1068,88 @@ export class GourceRenderer {
     this.searchMarker.visible = true;
     this.searchMarker.position.set(p.x, p.y, 1);
     this.searchMarker.scale.set(size, size, 1);
+  }
+
+  /**
+   * Ring every file being read, pulsing, at a constant size in PIXELS.
+   *
+   * A write is a flash that decays and a read is a ring that pulses: that
+   * difference in behaviour, not just in hue, is what makes a read read as a
+   * read while it lasts. Three things are load-bearing here:
+   *
+   *  - the size comes from `labelMetrics.worldPerPixel`, like the search ring
+   *    and the labels. The camera spans halfHeight 2..4000, so a ring sized in
+   *    world units is sub-pixel with the tree framed and covers the screen on a
+   *    single file;
+   *  - the pool is fixed at {@link MAX_READ_MARKERS} and the busiest files win
+   *    it, because an agent can read dozens of files a second;
+   *  - a slot stays with its path while that path is still being read, so an
+   *    arriving read does not shuffle every ring on screen (the same rule the
+   *    file-label pool follows, for the same reason).
+   */
+  private updateReadMarkers(model: readonly SimNode[]): void {
+    const candidates = this.readCandidates;
+    let count = 0;
+    for (const node of model) {
+      if (node.kind !== "file" || node.reading <= READ_MARKER_MIN) continue;
+      const p = this.layout.position(node.path);
+      if (!p) continue;
+      let candidate = candidates[count];
+      if (!candidate) {
+        candidate = { path: "", reading: 0, x: 0, y: 0 };
+        candidates.push(candidate);
+      }
+      candidate.path = node.path;
+      candidate.reading = node.reading;
+      candidate.x = p.x;
+      candidate.y = p.y;
+      count += 1;
+    }
+    candidates.length = count;
+    // Freshest first, so the cap drops the reads that are already fading rather
+    // than an arbitrary subset. Sorted in place: no allocation.
+    if (count > MAX_READ_MARKERS) candidates.sort(byReadingDesc);
+
+    const pending = this.readByPath;
+    pending.clear();
+    const kept = Math.min(count, MAX_READ_MARKERS);
+    for (let i = 0; i < kept; i += 1) pending.set(candidates[i].path, candidates[i]);
+
+    for (const slot of this.readMarkers) {
+      const held = slot.path ? pending.get(slot.path) : undefined;
+      if (!held) {
+        slot.sprite.visible = false;
+        slot.path = "";
+        continue;
+      }
+      pending.delete(slot.path);
+      this.drawReadMarker(slot, held);
+    }
+
+    const incoming = pending.values();
+    for (const slot of this.readMarkers) {
+      if (slot.path) continue;
+      const next = incoming.next();
+      if (next.done) break;
+      slot.path = next.value.path;
+      this.drawReadMarker(slot, next.value);
+    }
+  }
+
+  /** Place, size and fade one assigned read ring. */
+  private drawReadMarker(slot: ReadMarkerSlot, pick: ReadCandidate): void {
+    const pulse = 1 + READ_PULSE_DEPTH * Math.sin(this.elapsed * READ_PULSE_RATE);
+    // The ring both grows with the read and breathes while it lasts; it shrinks
+    // back toward the dot as `reading` decays, so it never lingers as a stale
+    // circle around a file nobody is looking at any more.
+    const size =
+      this.labelMetrics.worldPerPixel * READ_MARKER_PIXELS * (0.6 + 0.4 * pick.reading) * pulse;
+    slot.sprite.visible = true;
+    // Behind the search ring (z 1) and the figures (z 2): a read is context, not
+    // the thing the user asked for.
+    slot.sprite.position.set(pick.x, pick.y, 0.5);
+    slot.sprite.scale.set(size, size, 1);
+    (slot.sprite.material as SpriteMaterial).opacity = 0.25 + 0.55 * pick.reading;
   }
 
   /** Copy the view state onto the camera. */
@@ -1161,7 +1341,11 @@ export class GourceRenderer {
         candidates.push(candidate);
       }
       candidate.path = node.path;
-      candidate.highlight = node.highlight;
+      // A file being read earns a name exactly as a file being written does:
+      // `selectFileLabels` and `fileLabelOpacity` ask "how hot is this?", and a
+      // read is heat of another kind. Folded in HERE rather than in `labels.ts`,
+      // which keeps its contract — one number, whatever made it hot.
+      candidate.highlight = Math.max(node.highlight, node.reading);
       candidate.x = p.x;
       candidate.y = p.y;
       count += 1;
@@ -1388,6 +1572,28 @@ function makeSearchMarker(): Sprite {
   return new Sprite(
     new SpriteMaterial({ map: texture, transparent: true, depthTest: false }),
   );
+}
+
+/** Order read candidates by how recently they were read, freshest first. */
+function byReadingDesc(a: ReadCandidate, b: ReadCandidate): number {
+  return b.reading - a.reading;
+}
+
+/**
+ * The one texture every read ring in the pool shares.
+ *
+ * Built once: all 24 sprites show the same shape in the same colour, and only
+ * their position, scale and opacity change from frame to frame.
+ */
+function makeReadMarkerTexture(): CanvasTexture {
+  const texture = new CanvasTexture(createReadMarkerCanvas(READ_COLOR));
+  // A 2D canvas hands us sRGB texels; left linear the antialiased edge of each
+  // ring shifts gamma and thickens.
+  texture.colorSpace = SRGBColorSpace;
+  texture.minFilter = LinearFilter;
+  texture.magFilter = LinearFilter;
+  texture.generateMipmaps = false;
+  return texture;
 }
 
 /** Factory that keeps construction details out of `main.ts`. */

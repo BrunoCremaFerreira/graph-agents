@@ -13,6 +13,12 @@
     "the agent id that puts a figure and a beam on the change. Note that Claude",
     "Code reads settings.json at startup, so a session already open when you add",
     "this block keeps running without it.",
+    "The matcher also covers Read, which is not a change to the tree at all: it",
+    "lights the file violet (R) while the agent is looking at it, so the graph",
+    "shows the reading that explains the edit instead of staying dark until the",
+    "edit lands. Reads are hook-only by nature - the filesystem watcher cannot see",
+    "them (atime is unreliable under relatime, and it does not subscribe to access",
+    "events), so without this block there is no read glow at all.",
     "Env vars (optional): GRAPHAGENTS_SOCKET overrides the socket path and must",
     "match the daemon; default is /tmp/graph-agents.sock. GRAPHAGENTS_DEBUG_LOG",
     "names a file to append hook failures to - the only way to tell 'daemon down'",
@@ -21,7 +27,7 @@
   "hooks": {
     "PostToolUse": [
       {
-        "matcher": "Write|Edit|MultiEdit|Bash",
+        "matcher": "Write|Edit|MultiEdit|Bash|Read",
         "hooks": [
           {
             "type": "command",

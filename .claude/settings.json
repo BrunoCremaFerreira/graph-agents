@@ -7,6 +7,9 @@
     "figure and a beam on the change. Without it every event arrives with an",
     "empty agent, and an empty agent never creates an actor -- the tree updates",
     "while nobody is on camera.",
+    "Reads (R, violet) are hook-only by nature: the watcher cannot see a file",
+    "being opened -- atime is unreliable under relatime and it does not subscribe",
+    "to access events -- so without this block there is no read glow at all.",
     "Claude Code reads settings.json at session start, so a session already open",
     "when this file appears keeps running without it. Restart to pick it up."
   ],
@@ -21,7 +24,7 @@
   "hooks": {
     "PostToolUse": [
       {
-        "matcher": "Write|Edit|MultiEdit|Bash",
+        "matcher": "Write|Edit|MultiEdit|Bash|Read",
         "hooks": [
           {
             "type": "command",

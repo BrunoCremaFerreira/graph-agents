@@ -318,6 +318,10 @@ class EventHub:
         if event is None:
             return
 
+        if event.type == "R":
+            self._broadcast_transient(event)
+            return
+
         self._hook_paths[event.path] = self._clock()
         self._publish(event)
 
@@ -344,6 +348,26 @@ class EventHub:
                 self._publish(event)
 
     # -- internals ---------------------------------------------------------
+
+    def _broadcast_transient(self, event: Event) -> None:
+        """Show an event to whoever is watching now, and remember nothing of it.
+
+        The path a read takes instead of :meth:`_publish`, because a read is not
+        a change and every piece of state that method touches describes the tree
+        and who changed it:
+
+          * ``_known_paths`` decides add-vs-modify. Read-then-Edit is the single
+            commonest thing an agent does, so a read that marks the path as seen
+            turns the very next Write into a modification of a node no browser
+            was ever shown -- a file that flashes orange and is never added.
+          * ``_recent`` is what a client connecting later is replayed. A read is
+            a flash, not a fact about the project, and the ring is finite: an
+            agent reading twenty files would push the real changes out of it.
+          * ``_hook_paths`` suppresses the watcher's echo of a change a hook just
+            reported. A read has no echo -- nothing happened on disk -- so
+            stamping it there would swallow the genuine write that follows.
+        """
+        broadcast(self._clients, _encode(event))
 
     def _publish(self, event: Event) -> None:
         self._remember_path(event)

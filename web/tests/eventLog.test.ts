@@ -38,7 +38,14 @@ function event(
   path: string,
   overrides: Partial<AgentEvent> = {},
 ): AgentEvent {
-  const color = type === "A" ? "33FF33" : type === "M" ? "FFAA00" : "FF3333";
+  const color =
+    type === "A"
+      ? "33FF33"
+      : type === "M"
+        ? "FFAA00"
+        : type === "R"
+          ? "AA66FF"
+          : "FF3333";
   return {
     ts: 1000,
     agent: "sess-1",
@@ -102,6 +109,61 @@ describe("event log: what gets in", () => {
       ts: 1712.5,
       count: 1,
     });
+  });
+});
+
+/**
+ * The fourth operation (`R`, an agent reading a file) must stay out of this
+ * list entirely.
+ *
+ * The panel is titled by what it is: recent CHANGES. An agent reads roughly ten
+ * times more often than it writes -- it greps, it opens the file it is about to
+ * edit, it reads back what it wrote -- so admitting reads would push every real
+ * edit off the top within seconds, and the one question the list answers ("what
+ * just changed?") would no longer be answerable from it. The graph shows reads;
+ * this list does not.
+ *
+ * Folding is the subtler half. Repeats collapse against the TOP entry, so a
+ * read of the file just modified would otherwise either fold into the write's
+ * line (inflating its count with work that changed nothing) or, if the type
+ * differs, open a line of its own. Neither is acceptable: the read must leave
+ * the list byte for byte as it found it.
+ */
+describe("event log: reads never enter the list", () => {
+  it("drops a read event, because the list is a list of changes", () => {
+    const log = createEventLog();
+
+    const accepted = log.push(event("R", "src/app.py"));
+
+    expect(accepted).toBe(false);
+    expect(log.entries()).toEqual([]);
+  });
+
+  it("drops an attributed read too: authorship is not what disqualifies it", () => {
+    const log = createEventLog();
+
+    log.push(event("R", "src/app.py", { agent: "worker-7", origin: "hook" }));
+
+    expect(log.entries()).toEqual([]);
+  });
+
+  it("does not fold a read into the write sitting on top of the list", () => {
+    const log = createEventLog();
+    log.push(event("M", "a.ts"));
+
+    log.push(event("R", "a.ts"));
+
+    expect(log.entries()).toHaveLength(1);
+    expect(log.entries()[0]).toMatchObject({ type: "M", count: 1 });
+  });
+
+  it("leaves a burst of reads with the last real change still on top", () => {
+    const log = createEventLog();
+    log.push(event("M", "src/app.py"));
+
+    for (let i = 0; i < 50; i += 1) log.push(event("R", `src/dep-${i}.py`));
+
+    expect(log.entries().map((e) => e.path)).toEqual(["src/app.py"]);
   });
 });
 

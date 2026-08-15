@@ -120,3 +120,30 @@ export function pickFile(
 
   return best;
 }
+
+/**
+ * The file the pointer is currently RESTING on, or `null`.
+ *
+ * Hovering answers "what is that dot?" without opening anything, so the answer
+ * has to be {@link pickFile}'s, unchanged: the caller passes the same radius a
+ * click would use, because what you see named is what clicking would open, and a
+ * hover radius wider (or narrower) than the click's turns every label into a
+ * false promise about where the click will land.
+ *
+ * Only two states are decided here, and both mean the pointer is not ASKING:
+ *
+ *  - the pointer is off the canvas (`null`), which must drop the name rather
+ *    than freeze it on the last node the pointer happened to cross;
+ *  - the graph is being dragged. A drag moves the tree UNDER the pointer instead
+ *    of inspecting it, so nodes sweep past by the dozen and naming each one in
+ *    turn is noise over a camera gesture.
+ */
+export function hoverTarget(
+  candidates: readonly PickCandidate[],
+  pointer: PickPoint | null,
+  radius: number,
+  dragging: boolean,
+): string | null {
+  if (pointer === null || dragging) return null;
+  return pickFile(candidates, pointer, radius);
+}

@@ -168,9 +168,18 @@ export function snapToPixelGrid(value: number, origin: number, worldPerPixel: nu
  * so it is shown at full strength even though it is cold and the camera is far
  * out framing all the other matches -- the two conditions that would otherwise
  * fade it away completely.
+ *
+ * A `hovered` file is the one under the pointer, and it is the most direct
+ * question of the three: the user is pointing at THAT node right now. Fading it
+ * would answer the question in a whisper, so it too is shown whole.
  */
-export function fileLabelOpacity(highlight: number, halfHeight: number, pinned = false): number {
-  if (pinned) return 1;
+export function fileLabelOpacity(
+  highlight: number,
+  halfHeight: number,
+  pinned = false,
+  hovered = false,
+): number {
+  if (pinned || hovered) return 1;
   const hot = clamp01(highlight);
   const revealed = smoothstep(
     FILE_LABEL_ZOOM_THRESHOLD,
@@ -204,25 +213,40 @@ function onScreen(candidate: LabelCandidate, viewport: LabelViewport): boolean {
  * that merely happens to be hot -- but they do not skip the culling (an
  * off-screen name is invisible either way) nor the cap (a one-letter query
  * matches most of the project, and the sprite pool does not grow).
+ *
+ * `hovered` is the file under the pointer. It skips the same cut and takes the
+ * very first slot, ahead of the matches: a hover is the question being asked
+ * right now, while a search is a standing one. It is spared no other rule --
+ * the node is on screen by definition (the pointer is on it), and when the cap
+ * is already full it takes a slot rather than growing the pool.
  */
 export function selectFileLabels(
   candidates: readonly LabelCandidate[],
   viewport: LabelViewport,
   max = MAX_FILE_LABELS,
   pinned?: ReadonlySet<string>,
+  hovered?: string | null,
 ): LabelCandidate[] {
   const zoomedIn = viewport.halfHeight <= FILE_LABEL_ZOOM_THRESHOLD;
   const isPinned = (candidate: LabelCandidate): boolean => pinned?.has(candidate.path) ?? false;
+  const isHovered = (candidate: LabelCandidate): boolean => candidate.path === hovered;
   const eligible: LabelCandidate[] = [];
 
   for (const candidate of candidates) {
-    if (candidate.highlight <= HOT_HIGHLIGHT && !zoomedIn && !isPinned(candidate)) continue;
+    if (
+      candidate.highlight <= HOT_HIGHLIGHT &&
+      !zoomedIn &&
+      !isPinned(candidate) &&
+      !isHovered(candidate)
+    )
+      continue;
     if (!onScreen(candidate, viewport)) continue;
     eligible.push(candidate);
   }
 
   eligible.sort(
     (a, b) =>
+      Number(isHovered(b)) - Number(isHovered(a)) ||
       Number(isPinned(b)) - Number(isPinned(a)) ||
       b.highlight - a.highlight ||
       (a.path < b.path ? -1 : a.path > b.path ? 1 : 0),

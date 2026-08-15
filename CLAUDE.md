@@ -105,7 +105,8 @@ web/src/eventLog.ts       # pure: the recent-changes list model (drops seed, fol
 web/src/attribution.ts    # pure: has any attributed event arrived? (latch, never unlatches)
 web/src/search.ts         # pure: match, the walk over matches, and the camera frame for them
 web/src/rootPrompt.ts     # pure: the ctrl+L bar's state (text, completion, discard on Esc)
-web/src/pick.ts           # pure: which file a click landed on, and what counts as a click
+web/src/pick.ts           # pure: which file a click (or the resting pointer) landed on
+web/src/labels.ts         # pure: label size/placement, and which files are named this frame
 web/src/fileView.ts       # pure: the content panel's state (request, adopt, discard)
 web/src/searchKeys.ts     # pure: what ctrl+F / F3 / Esc mean
 web/src/*Hud.ts           # thin DOM painters: context caption, event list, attribution, search box
@@ -204,7 +205,7 @@ Web MVP implemented and verified end-to-end (TDD).
   The listener binds every interface, so without the gate anyone who can reach `:8080` could
   list the host's directories and repoint the graph. SSH and VS Code forwarding arrive as
   loopback, so the ordinary remote setup is unaffected.
-- **Frontend** (`web/`): 643/643 vitest green, `tsc` + `vite build` clean. Gource-style WebGL
+- **Frontend** (`web/`): 670/670 vitest green, `tsc` + `vite build` clean. Gource-style WebGL
   renderer (three.js force layout + `UnrealBloomPass` + per-agent figure and beams), pure
   `simulation.ts` model, typed `parseEvent`, auto-reconnecting `wsClient.ts`. Label placement
   lives in pure `labels.ts` (like `view.ts`) because `renderer.ts` needs a GL context and
@@ -214,6 +215,22 @@ Web MVP implemented and verified end-to-end (TDD).
   at a 48-sprite pool whose slots stay bound to a path so a new event does not repaint every
   canvas. `updateLabels` runs **every frame**: positioning labels only on topology change
   left them stranded while the force layout kept moving the nodes.
+- **Pointing at a dot names it.** With the tree framed whole every rule above conspires to
+  keep the node under the pointer anonymous — it is cold (that is *why* the user is asking)
+  and the camera is past the zoom threshold — so the only way to ask "what is that one?" was
+  to click it and open a viewer over the graph. `hoverTarget` (pick.ts) is a thin guard
+  around `pickFile`: it answers `null` while the pointer is off the canvas or a drag is in
+  progress (a pan moves the tree *under* the pointer instead of inspecting it), and otherwise
+  returns the click's own answer — same `PICK_RADIUS_PIXELS`, because what you see named must
+  be what a click would open. `selectFileLabels` and `fileLabelOpacity` take the hovered path
+  and exempt it from the cold-plus-far cut, ahead of the search matches (a hover is the
+  question being asked right now; a query is a standing one) but still inside the cull and the
+  48-slot cap. The renderer records the position on every `pointermove` and resolves the hover
+  **every frame**, from the label candidate list it has just refilled: the force layout never
+  settles, so a node slides under a pointer that has not moved, and the camera changes what is
+  under it too. Only `pointerType === "mouse"` counts — a touchscreen has no hover, and a
+  finger would leave a name stuck where it last landed. The cursor follows (`pointer` over a
+  file, `grab` otherwise, `grabbing` untouched during a drag).
 - **Search (`ctrl+F`)** follows the same split: every decision is pure and tested —
   `search.ts` (substring match on the file name, or on the whole path once the query
   contains `/`; the walk `F3` takes over the matches; and `frameMatches`, which returns the

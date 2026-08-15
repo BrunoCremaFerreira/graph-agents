@@ -529,3 +529,151 @@ describe("fileLabelOpacity with a pinned match", () => {
     expect(fileLabelOpacity(0, FAR, false)).toBe(fileLabelOpacity(0, FAR));
   });
 });
+
+/**
+ * A sixth defect motivates the two "hovered" groups below: with the tree framed
+ * whole, every rule in this module conspires to keep the file under the pointer
+ * anonymous. It is cold -- nobody just touched it, that is why the user is
+ * pointing at it to ask -- and the camera is past
+ * {@link FILE_LABEL_ZOOM_THRESHOLD}, so `selectFileLabels` drops it and
+ * `fileLabelOpacity` would fade it to nothing anyway. The result is hundreds of
+ * unnamed dots and no way to ask "what is that one?" short of clicking it and
+ * opening a viewer over the graph.
+ *
+ * Hovering overrides both cuts, exactly the way `pinned` does -- and outranks
+ * pinning, because a hover is the more immediate question: the user is pointing
+ * at THAT node right now, while the search matches are a standing query. Which
+ * node is hovered is decided by `hoverTarget` in pick.ts; this module only has
+ * to honour the answer.
+ *
+ * Two things are deliberately NOT new rules here. The hovered node is by
+ * definition on screen (the pointer is on it), so the culling is left exactly as
+ * it is rather than gaining a special case; and `hovered` is optional, so every
+ * existing caller -- above all the search -- must keep behaving as it does today.
+ */
+describe("selectFileLabels with a hovered file", () => {
+  it("names the hovered file even though it is cold and the camera is far out", () => {
+    // The defect in one line: without this, the node the user is pointing at is
+    // the one node on screen guaranteed to stay anonymous.
+    const nodes = [candidate("src/under-pointer.ts", 0), candidate("src/other.ts", 0)];
+
+    const chosen = selectFileLabels(
+      nodes,
+      viewport(FAR_VIEW),
+      MAX_FILE_LABELS,
+      undefined,
+      "src/under-pointer.ts",
+    );
+
+    expect(chosen.map((c) => c.path)).toEqual(["src/under-pointer.ts"]);
+  });
+
+  it("puts the hovered file ahead of both a search match and a hotter file", () => {
+    // A hover is the question being asked right now; a pinned match is a
+    // standing query and a hot file is news the user did not ask for.
+    const nodes = [candidate("touched.ts", 1), candidate("match.ts", 0), candidate("hovered.ts", 0)];
+
+    const chosen = selectFileLabels(
+      nodes,
+      viewport(NEAR_VIEW),
+      MAX_FILE_LABELS,
+      new Set(["match.ts"]),
+      "hovered.ts",
+    );
+
+    expect(chosen[0].path).toBe("hovered.ts");
+  });
+
+  it("takes a slot from the cap when the matches have already filled it, rather than growing the pool", () => {
+    const matches = Array.from({ length: 10 }, (_, i) => candidate(`f${i}.ts`, 0));
+    const nodes = [...matches, candidate("hovered.ts", 0)];
+    const pinned = new Set(matches.map((c) => c.path));
+
+    const chosen = selectFileLabels(nodes, viewport(FAR_VIEW), 3, pinned, "hovered.ts");
+
+    expect(chosen.map((c) => c.path)).toContain("hovered.ts");
+    expect(chosen).toHaveLength(3);
+  });
+
+  it("orders the rest by path behind the hovered file, identically on every call", () => {
+    // The candidate list is rebuilt in arrival order on every event; the hover
+    // must lead and the remainder must not shuffle, or the sprite pool repaints
+    // itself while the pointer sits still.
+    const nodes = [candidate("b.ts", 0), candidate("a.ts", 0), candidate("c.ts", 0)];
+    const view = viewport(NEAR_VIEW);
+
+    const first = selectFileLabels(nodes, view, MAX_FILE_LABELS, undefined, "b.ts").map(
+      (c) => c.path,
+    );
+    const second = selectFileLabels([...nodes].reverse(), view, MAX_FILE_LABELS, undefined, "b.ts").map(
+      (c) => c.path,
+    );
+
+    expect(first).toEqual(["b.ts", "a.ts", "c.ts"]);
+    expect(second).toEqual(first);
+  });
+
+  it("leaves the culling of every other candidate exactly as it was", () => {
+    // The hovered node is on screen by definition, so hovering buys no relief
+    // from the cull for anybody else: an off-screen hot file is still dropped.
+    const nodes = [candidate("visible.ts", 1, 0, 0), candidate("far.ts", 1, 0, 5000)];
+
+    const chosen = selectFileLabels(nodes, viewport(50), MAX_FILE_LABELS, undefined, "visible.ts");
+
+    expect(chosen.map((c) => c.path)).toEqual(["visible.ts"]);
+  });
+
+  it("changes nothing when the pointer is over no file at all", () => {
+    const nodes = [candidate("hot.ts", 1), candidate("cold.ts", 0), candidate("b.ts", 0.5)];
+    const view = viewport(NEAR_VIEW);
+
+    expect(selectFileLabels(nodes, view, MAX_FILE_LABELS, undefined, null)).toEqual(
+      selectFileLabels(nodes, view),
+    );
+  });
+
+  it("changes nothing for a caller that does not know about hovering", () => {
+    const nodes = [candidate("hot.ts", 1), candidate("cold.ts", 0), candidate("b.ts", 0.5)];
+    const view = viewport(NEAR_VIEW);
+    const pinned = new Set(["cold.ts"]);
+
+    expect(selectFileLabels(nodes, view, MAX_FILE_LABELS, pinned, undefined)).toEqual(
+      selectFileLabels(nodes, view, MAX_FILE_LABELS, pinned),
+    );
+  });
+
+  it("changes nothing when the hovered path is no longer in the graph", () => {
+    // A file deleted (or a root switched) between the hover and the frame: the
+    // stale path must not conjure a label for a node that is not there.
+    const nodes = [candidate("hot.ts", 1), candidate("cold.ts", 0)];
+    const view = viewport(NEAR_VIEW);
+
+    expect(selectFileLabels(nodes, view, MAX_FILE_LABELS, undefined, "deleted.ts")).toEqual(
+      selectFileLabels(nodes, view),
+    );
+  });
+});
+
+describe("fileLabelOpacity with a hovered file", () => {
+  const FAR = FILE_LABEL_ZOOM_THRESHOLD * 4;
+
+  it("shows the hovered name at full strength however cold and far it is", () => {
+    expect(fileLabelOpacity(0, FAR, false, true)).toBe(1);
+  });
+
+  it("shows the hovered name at full strength up close too, without exceeding 1", () => {
+    expect(fileLabelOpacity(1, FILE_LABEL_ZOOM_THRESHOLD * 0.25, false, true)).toBe(1);
+  });
+
+  it("leaves a file the pointer is not on faded exactly as before", () => {
+    expect(fileLabelOpacity(0, FAR, false, false)).toBe(fileLabelOpacity(0, FAR));
+  });
+
+  it("leaves a caller that does not know about hovering untouched", () => {
+    expect(fileLabelOpacity(0.3, NEAR_VIEW, false, undefined)).toBe(fileLabelOpacity(0.3, NEAR_VIEW));
+  });
+
+  it("keeps a pinned match at full strength whether or not the pointer is on it", () => {
+    expect(fileLabelOpacity(0, FAR, true, false)).toBe(1);
+  });
+});

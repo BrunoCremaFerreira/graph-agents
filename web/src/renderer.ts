@@ -55,7 +55,13 @@ import {
 } from "./view";
 import { frameMatches, type SearchFrame } from "./search";
 import { createSearchMarkerCanvas } from "./searchMarker";
-import { pickFile, isClickGesture, type PickCandidate, type ClickGesture } from "./pick";
+import {
+  pickFile,
+  hoverTarget,
+  isClickGesture,
+  type PickCandidate,
+  type ClickGesture,
+} from "./pick";
 import {
   fileLabelOpacity,
   labelFontPixels,
@@ -211,6 +217,22 @@ export class GourceRenderer {
   private downX = 0;
   private downY = 0;
   private downTime = 0;
+  /**
+   * Where the mouse is resting, in CSS pixels, or null when it is not on the
+   * canvas. Recorded on every move (drag or not) because the answer to "what is
+   * under it" is recomputed each frame, not on the event.
+   */
+  private hoverX = 0;
+  private hoverY = 0;
+  private hoverActive = false;
+  /** The file under the pointer this frame, as decided by `hoverTarget`. */
+  private hoveredPath: string | null = null;
+  /**
+   * Scratch for the pointer→world conversion, refilled in place: the hover runs
+   * every frame, and the click and the hover never hold it at the same time.
+   */
+  private readonly ndcScratch = { x: 0, y: 0 };
+  private readonly worldScratch = { x: 0, y: 0 };
   private readonly reportedFrameErrors = new Set<string>();
   private readonly beamPos = new Float32Array(MAX_BEAMS * 2 * 3);
   private readonly beamColor = new Float32Array(MAX_BEAMS * 2 * 3);
@@ -367,7 +389,7 @@ export class GourceRenderer {
         // Touching the camera takes it back from the search, highlights and all
         // still showing.
         this.searchArmed = false;
-        this.view = zoomAt(this.view, factor, this.pointerNdc(event), this.aspect());
+        this.view = zoomAt(this.view, factor, this.pointerNdc(event.clientX, event.clientY), this.aspect());
         this.syncCamera();
       },
       { passive: false },
@@ -387,6 +409,17 @@ export class GourceRenderer {
     });
 
     this.canvas.addEventListener("pointermove", (event: PointerEvent) => {
+      // Recorded BEFORE the drag test: a pointer that is merely passing over the
+      // canvas never reaches the code below, and its position is exactly what
+      // the hover needs. Touch is excluded because there is no hover on a
+      // touchscreen -- a finger that lifts would leave a name stuck to the last
+      // place it landed.
+      if (event.pointerType === "mouse") {
+        this.hoverX = event.clientX;
+        this.hoverY = event.clientY;
+        this.hoverActive = true;
+      }
+
       if (this.dragPointer !== event.pointerId) return;
       const dx = event.clientX - this.dragX;
       const dy = event.clientY - this.dragY;
@@ -419,6 +452,15 @@ export class GourceRenderer {
     // the pan and opens nothing.
     this.canvas.addEventListener("pointercancel", endDrag);
 
+    // The pointer left: forget where it was, or the last node it happened to
+    // cross keeps its name for as long as the page stays open.
+    const clearHover = (): void => {
+      this.hoverActive = false;
+    };
+    this.canvas.addEventListener("pointerleave", clearHover);
+    this.canvas.addEventListener("pointerout", clearHover);
+    this.canvas.addEventListener("pointercancel", clearHover);
+
     this.canvas.addEventListener("dblclick", () => {
       this.view = releaseToAuto(this.view);
     });
@@ -426,13 +468,34 @@ export class GourceRenderer {
     this.canvas.style.cursor = "grab";
   }
 
-  /** Pointer position in normalized device coordinates (y up). */
-  private pointerNdc(event: MouseEvent): { x: number; y: number } {
+  /**
+   * Pointer position in normalized device coordinates (y up).
+   *
+   * Takes CSS coordinates rather than an event because the hover is resolved on
+   * a frame, long after the event that recorded the position is gone. `out`
+   * lets the per-frame caller pass its own scratch and allocate nothing.
+   */
+  private pointerNdc(clientX: number, clientY: number, out = { x: 0, y: 0 }): { x: number; y: number } {
     const rect = this.canvas.getBoundingClientRect();
-    return {
-      x: ((event.clientX - rect.left) / Math.max(1, rect.width)) * 2 - 1,
-      y: -(((event.clientY - rect.top) / Math.max(1, rect.height)) * 2 - 1),
-    };
+    out.x = ((clientX - rect.left) / Math.max(1, rect.width)) * 2 - 1;
+    out.y = -(((clientY - rect.top) / Math.max(1, rect.height)) * 2 - 1);
+    return out;
+  }
+
+  /**
+   * Pointer position in WORLD units, by the same path `zoomAt` takes -- so what
+   * a click opens, what the wheel zooms towards and what the hover names are all
+   * the same node. One implementation, because two would drift apart.
+   */
+  private pointerWorld(
+    clientX: number,
+    clientY: number,
+    out: { x: number; y: number },
+  ): { x: number; y: number } {
+    const ndc = this.pointerNdc(clientX, clientY, this.ndcScratch);
+    out.x = this.view.centerX + ndc.x * this.view.halfHeight * this.aspect();
+    out.y = this.view.centerY + ndc.y * this.view.halfHeight;
+    return out;
   }
 
   /**
@@ -456,13 +519,7 @@ export class GourceRenderer {
     };
     if (!isClickGesture(gesture)) return;
 
-    // Pointer to world by the same path `zoomAt` takes, so what is under the
-    // cursor here is what the wheel would have zoomed towards.
-    const ndc = this.pointerNdc(event);
-    const world = {
-      x: this.view.centerX + ndc.x * this.view.halfHeight * this.aspect(),
-      y: this.view.centerY + ndc.y * this.view.halfHeight,
-    };
+    const world = this.pointerWorld(event.clientX, event.clientY, this.worldScratch);
 
     // Directories are left out: the panel shows file contents, and a click on a
     // folder does nothing rather than opening its nearest child by accident.
@@ -1111,6 +1168,26 @@ export class GourceRenderer {
     }
     candidates.length = count;
 
+    // Resolved HERE, once the list has been refilled with this frame's
+    // positions, and every frame rather than on the mouse event: the force
+    // layout never settles, so a node slides under a pointer that has not
+    // moved, and the camera changes what is under it too. The list already
+    // holds the path and position of every placed file, so hovering costs no
+    // second walk and no allocation.
+    this.hoveredPath = hoverTarget(
+      candidates,
+      this.hoverActive ? this.pointerWorld(this.hoverX, this.hoverY, this.worldScratch) : null,
+      // The click's radius, deliberately: what the pointer names is what it
+      // would open, and a wider one would make the label a false promise.
+      this.labelMetrics.worldPerPixel * PICK_RADIUS_PIXELS,
+      this.dragPointer !== null,
+    );
+    // The drag owns the cursor while it lasts -- `pointerdown` set `grabbing`,
+    // and a hover must not undo it mid-pan.
+    if (this.dragPointer === null) {
+      this.canvas.style.cursor = this.hoveredPath ? "pointer" : "grab";
+    }
+
     const chosen = selectFileLabels(
       candidates,
       {
@@ -1123,6 +1200,9 @@ export class GourceRenderer {
       // A match keeps its name even when it is cold and the camera is far out
       // framing all the others -- the two conditions that would hide it.
       this.searchMatches,
+      // And so does the file under the pointer, which is asked about precisely
+      // because nothing has touched it and it has no name.
+      this.hoveredPath,
     );
 
     // Slots are assigned by identity, not by rank. Handing slot `i` to the i-th
@@ -1162,6 +1242,7 @@ export class GourceRenderer {
       pick.highlight,
       this.view.halfHeight,
       this.searchMatches.has(pick.path),
+      pick.path === this.hoveredPath,
     );
   }
 

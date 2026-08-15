@@ -30,7 +30,7 @@
  */
 
 import { describe, it, expect } from "vitest";
-import { pickFile, isClickGesture } from "../src/pick";
+import { pickFile, isClickGesture, hoverTarget } from "../src/pick";
 
 /** A node of the graph, as far as hit-testing is concerned. */
 interface Candidate {
@@ -265,5 +265,110 @@ describe("isClickGesture: non-finite numbers are never a click", () => {
     patch,
   ) => {
     expect(isClickGesture({ ...TAP, ...(patch as Partial<Gesture>) })).toBe(false);
+  });
+});
+
+/**
+ * Contract tests (RED) for hovering: which file, if any, the pointer is
+ * currently RESTING on.
+ *
+ * The defect: only a bounded handful of files are ever named (see labels.ts --
+ * the touched ones, plus the idle ones once the camera is close enough), so with
+ * the tree framed whole the user is looking at hundreds of anonymous dots. There
+ * is no way to ask "what is that one?" short of clicking it and opening a viewer
+ * over the graph. Pointing at a node should name it.
+ *
+ * `hoverTarget` is a thin guard around {@link pickFile}: the arithmetic of "what
+ * is under this point" is already settled and must not be duplicated, so the only
+ * new decisions are the two states in which a pointer is NOT asking about
+ * anything --
+ *
+ *  - **the pointer has left the canvas** (`pointer` is null): the last node it
+ *    passed over must not keep its name forever, which is what happens if the
+ *    renderer simply stops updating;
+ *  - **the graph is being dragged**: during a pan the pointer sweeps across the
+ *    whole tree, and a name lighting up under it on every frame is noise. A drag
+ *    is a camera gesture, not an inspection.
+ *
+ * Everything else must be pickFile's answer, unchanged -- same radius in world
+ * units, same nearest-wins, same path tie-break, same "a degenerate radius or
+ * position selects nothing". Expected to FAIL until src/pick.ts exports
+ * hoverTarget.
+ */
+describe("hoverTarget: the pointer at rest names the node under it", () => {
+  it("names the file under the pointer", () => {
+    expect(hoverTarget(SPREAD, { x: 100, y: 0 }, 10, false)).toBe("daemon/server.py");
+  });
+
+  it("gives exactly the answer a click at the same point would give", () => {
+    // The hit-testing arithmetic has one owner; hovering only decides WHEN to
+    // ask it. A second implementation here would drift from the click.
+    const point = { x: 2, y: 2 };
+
+    expect(hoverTarget(SPREAD, point, 10, false)).toBe(pickFile(SPREAD, point, 10));
+  });
+
+  it("names nothing when the pointer rests on empty space", () => {
+    expect(hoverTarget(SPREAD, { x: 50, y: 50 }, 10, false)).toBeNull();
+  });
+
+  it("names the nearest file when several sit inside the radius", () => {
+    const crowded = [
+      { path: "a.ts", x: 0, y: 0 },
+      { path: "b.ts", x: 1, y: 0 },
+    ];
+
+    expect(hoverTarget(crowded, { x: 0.9, y: 0 }, 5, false)).toBe("b.ts");
+  });
+
+  it("breaks an exact tie by path, so a hovered name does not flicker between two stacked files", () => {
+    const stacked = [
+      { path: "web/src/zoo.ts", x: 5, y: 5 },
+      { path: "web/src/apple.ts", x: 5, y: 5 },
+    ];
+
+    expect(hoverTarget(stacked, { x: 5, y: 5 }, 10, false)).toBe("web/src/apple.ts");
+  });
+});
+
+describe("hoverTarget: a pointer that is not asking names nothing", () => {
+  it("names nothing when the pointer has left the canvas", () => {
+    // Otherwise the last node the pointer crossed keeps its name for as long as
+    // the page is open.
+    expect(hoverTarget(SPREAD, null, 10, false)).toBeNull();
+  });
+
+  it("names nothing while the graph is being dragged, even with a file exactly under the pointer", () => {
+    // A pan sweeps the pointer across the whole tree; the user is moving the
+    // camera, not inspecting what it passes over.
+    expect(hoverTarget(SPREAD, { x: 100, y: 0 }, 10, true)).toBeNull();
+  });
+});
+
+describe("hoverTarget: a degenerate radius or position names nothing", () => {
+  it.each([
+    ["zero", 0],
+    ["negative", -10],
+    ["NaN", NaN],
+    ["Infinity", Infinity],
+  ])("names nothing for a %s radius, which is what a zero-height viewport produces", (
+    _label,
+    radius,
+  ) => {
+    expect(hoverTarget(SPREAD, { x: 0, y: 0 }, radius as number, false)).toBeNull();
+  });
+
+  it("names nothing when the pointer does not unproject to a real point", () => {
+    expect(hoverTarget(SPREAD, { x: NaN, y: NaN }, 10, false)).toBeNull();
+  });
+
+  it("never names a node the layout has not placed yet", () => {
+    const unplaced = [{ path: "ghost.ts", x: NaN, y: NaN }];
+
+    expect(hoverTarget(unplaced, { x: 0, y: 0 }, 1000, false)).toBeNull();
+  });
+
+  it("names nothing over an empty graph, which is the page before the seed arrives", () => {
+    expect(hoverTarget([], { x: 0, y: 0 }, 10, false)).toBeNull();
   });
 });

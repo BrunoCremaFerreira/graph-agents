@@ -3,7 +3,7 @@
  *
  * They specify BEHAVIOR only -- the directory tree, actor registry, and fade.
  * No WebGL/three.js drawing is exercised. Expected to FAIL until
- * `desenvolvedor-frontend` implements createSimulation (currently a
+ * `developer-frontend` implements createSimulation (currently a
  * NotImplementedError stub). One failure reason per test.
  */
 

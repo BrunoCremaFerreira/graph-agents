@@ -5,8 +5,8 @@
  * the id at its last `-`. That was tolerable while `agent` was a session id, but
  * a tool call made by a SUBAGENT carries an OPAQUE `agent_id`, and chopping an
  * opaque id yields a slab of hexadecimal on screen -- two subagents look like
- * two random strings instead of "desenvolvedor-backend" and
- * "desenvolvedor-frontend". The hook payload also carries `agent_type`, the
+ * two random strings instead of "developer-backend" and
+ * "developer-frontend". The hook payload also carries `agent_type`, the
  * human-readable name, so the daemon will start broadcasting it as a new
  * `label` field.
  *
@@ -39,7 +39,7 @@ function subagentRaw(): Record<string, unknown> {
     path: "graphagents/normalize.py",
     color: "FFAA00",
     origin: "hook",
-    label: "desenvolvedor-backend",
+    label: "developer-backend",
   };
 }
 
@@ -48,7 +48,7 @@ describe("parseEvent: the readable agent label", () => {
     const parsed = parseEvent(subagentRaw());
 
     expect(parsed).not.toBeNull();
-    expect((parsed as AgentEvent).label).toBe("desenvolvedor-backend");
+    expect((parsed as AgentEvent).label).toBe("developer-backend");
   });
 
   it("keeps the opaque agent id as the identity, distinct from the label", () => {
@@ -83,8 +83,8 @@ describe("parseEvent: the readable agent label", () => {
   it.each([
     ["a number", 42],
     ["null", null],
-    ["an object", { name: "desenvolvedor-backend" }],
-    ["an array", ["desenvolvedor-backend"]],
+    ["an object", { name: "developer-backend" }],
+    ["an array", ["developer-backend"]],
     ["a boolean", true],
   ])("degrades a label of the wrong type (%s) to an empty string", (_case, badLabel) => {
     const raw = subagentRaw();
@@ -153,7 +153,7 @@ describe("parseEvent: a label does not weaken the rest of the validation", () =>
         kind: "meta",
         root: "~/projects/graph-agents",
         branch: "development",
-        label: "desenvolvedor-backend",
+        label: "developer-backend",
       }),
     ).toBeNull();
   });

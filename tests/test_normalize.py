@@ -2,7 +2,7 @@
 
 These specify the pure normalization function that maps one Claude Code hook
 payload to a broadcastable Event. They are expected to FAIL until
-`desenvolvedor-backend` implements the function (currently a NotImplementedError
+`developer-backend` implements the function (currently a NotImplementedError
 stub). Style: Arrange-Act-Assert, one failure reason per test.
 """
 

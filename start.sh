@@ -1,48 +1,50 @@
 #!/usr/bin/env bash
 #
-# start.sh — bootstrap + run do projeto graph-agents (visualizador web estilo Gource).
+# start.sh — bootstrap + run graph-agents (the Gource-style web visualizer).
 #
-# Faz tudo a partir do zero:
-#   1. cria/prepara a venv Python e instala as deps do daemon;
-#   2. garante um npm utilizável (veja abaixo) e gera web/dist;
-#   3. sobe o daemon: HTTP (serve o front) + WebSocket (/ws) na MESMA porta + ingest.
+# Does everything from scratch:
+#   1. creates/prepares the Python venv and installs the daemon deps;
+#   2. secures a usable npm (see below) and builds web/dist;
+#   3. starts the daemon: HTTP (serving the front end) + WebSocket (/ws) on the
+#      SAME port + the ingest socket.
 #
-# Uso:
-#   ./start.sh                # prod: garante o build e serve web/dist em http://localhost:8080
-#   ./start.sh --rebuild      # força reinstalar/rebuildar o front antes de subir
-#   ./start.sh --no-build     # pula o front, serve o web/dist já existente
-#   ./start.sh --dev          # daemon + Vite dev server (hot reload) em http://localhost:5173
-#   ./start.sh --print-npm    # só resolve o npm, imprime o caminho no stdout e sai (não sobe nada)
+# Usage:
+#   ./start.sh                # prod: ensure the build, serve web/dist on http://localhost:8080
+#   ./start.sh --rebuild      # force a reinstall/rebuild of the front end before starting
+#   ./start.sh --no-build     # skip the front end, serve the existing web/dist
+#   ./start.sh --dev          # daemon + Vite dev server (hot reload) on http://localhost:5173
+#   ./start.sh --print-npm    # only resolve npm, print the path on stdout and exit (starts nothing)
 #   ./start.sh --help
 #
-# Como o npm é resolvido (nesta ordem):
-#   1. $NPM do ambiente;
-#   2. npm no $PATH;
-#   3. bootstrap local: baixa o tarball do npm (curl ou wget) do registry, descompacta em
-#      .npm-bootstrap/ e escreve um wrapper .npm-bootstrap/bin/npm que roda
-#      `node .../npm-cli.js "$@"`. Precisa de node instalado; é cacheado (com o cache
-#      quente nada é baixado). Distros que empacotam só o `node` (Debian/Ubuntu) caem aqui.
+# How npm is resolved (in this order):
+#   1. $NPM from the environment;
+#   2. npm on $PATH;
+#   3. local bootstrap: download the npm tarball (curl or wget) from the registry, unpack it
+#      into .npm-bootstrap/ and write a wrapper .npm-bootstrap/bin/npm that runs
+#      `node .../npm-cli.js "$@"`. Needs node installed; it is cached (with a warm cache
+#      nothing is downloaded). Distros packaging only `node` (Debian/Ubuntu) land here.
 #
-# Como o front é instalado (o MESMO caminho em prod e em --dev):
-#   - com web/package-lock.json: `npm ci`, que instala A PARTIR do lock e não o reescreve
-#     (um `npm install` aqui apaga os campos libc do lock). Se o `ci` sair não-zero (lock
-#     fora de sincronia com o package.json), cai para `npm install` e segue.
-#   - sem lockfile: `npm install` direto (um `ci` sem lock só dá erro confuso).
-#   - em prod, `npm run build` no fim; em --dev não há build nenhum — o Vite serve do
-#     fonte e o modo termina em `npm run dev`.
-#   - em prod a instalação roda sempre, inclusive com web/node_modules já presente — é
-#     isso que faz --rebuild significar "reinstala E reconstrói". Em --dev um
-#     web/node_modules já existente é reaproveitado (o `npm ci` apaga e refaz a árvore
-#     inteira, e --dev é o comando que se reinicia dezenas de vezes por hora); use
-#     `./start.sh --dev --rebuild` para forçar a reinstalação também ali.
+# How the front end is installed (the SAME path in prod and in --dev):
+#   - with web/package-lock.json: `npm ci`, which installs FROM the lock and does not rewrite
+#     it (an `npm install` here strips the lock's libc fields). If `ci` exits non-zero (lock
+#     out of sync with package.json), it falls back to `npm install` and carries on.
+#   - without a lockfile: `npm install` directly (a `ci` with no lock only yields a confusing
+#     error).
+#   - in prod, `npm run build` at the end; in --dev there is no build at all — Vite serves
+#     from source and the mode ends in `npm run dev`.
+#   - in prod the install always runs, even with web/node_modules already present — that is
+#     what makes --rebuild mean "reinstall AND rebuild". In --dev an existing
+#     web/node_modules is reused (`npm ci` wipes and rebuilds the whole tree, and --dev is
+#     the command restarted dozens of times an hour); use `./start.sh --dev --rebuild` to
+#     force the reinstall there too.
 #
-# Variáveis de ambiente (com defaults):
-#   GRAPHAGENTS_SOCKET     /tmp/graph-agents.sock   socket Unix de ingest dos hooks
-#   GRAPHAGENTS_HTTP_PORT  8080                     porta única: serve web/dist E o
-#                                                   WebSocket em /ws (uma só porta
-#                                                   encaminhada basta via SSH)
-#   GRAPHAGENTS_PROJECT_ROOT  (cwd)                 raiz cujos paths viram relativos no grafo
-#   PYTHON  NODE  NPM      overrides dos executáveis
+# Environment variables (with defaults):
+#   GRAPHAGENTS_SOCKET     /tmp/graph-agents.sock   Unix ingest socket for the hooks
+#   GRAPHAGENTS_HTTP_PORT  8080                     single port: serves web/dist AND the
+#                                                   WebSocket at /ws (one forwarded port
+#                                                   is enough over SSH)
+#   GRAPHAGENTS_PROJECT_ROOT  (cwd)                 root the graph's paths are relative to
+#   PYTHON  NODE  NPM      executable overrides
 #
 set -euo pipefail
 
@@ -53,7 +55,7 @@ cd "$REPO_ROOT"
 MODE="prod"      # prod | dev
 BUILD="auto"     # auto | force | skip
 PRINT_NPM=0
-LOG_FD=1         # --print-npm manda todo log para stderr: o stdout é a resposta
+LOG_FD=1         # --print-npm sends every log line to stderr: stdout is the answer
 for arg in "$@"; do
   case "$arg" in
     --dev)       MODE="dev" ;;
@@ -61,9 +63,9 @@ for arg in "$@"; do
     --no-build)  BUILD="skip" ;;
     --print-npm) PRINT_NPM=1; LOG_FD=2 ;;
     -h|--help)
-      sed -n '2,46p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'
+      sed -n '2,48p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'
       exit 0 ;;
-    *) echo "Argumento desconhecido: $arg (use --help)" >&2; exit 2 ;;
+    *) echo "Unknown argument: $arg (use --help)" >&2; exit 2 ;;
   esac
 done
 
@@ -74,16 +76,16 @@ err()  { printf '\033[1;31m✗ %s\033[0m\n' "$*" >&2; }
 # ---- 0. npm ----------------------------------------------------------------
 NPM="${NPM:-}"
 NPM_ERROR=""
-# O pin existe por um motivo só: 10.9.4 é o npm mais novo que roda no Node 18 desta máquina
-# (declara engines.node "^18.17.0 || >=20.5.0"; o npm 11 exige ^20.17.0 || >=22.9.0).
-# Não é sobre o lockfile: medido, o 10.9.4 também remove as 42 linhas de `libc` num
-# `npm install`, porque só o npm 11 as escreve. Quem preserva o lock é o `npm ci`.
+# The pin exists for one reason only: 10.9.4 is the newest npm that runs on this machine's
+# Node 18 (it declares engines.node "^18.17.0 || >=20.5.0"; npm 11 demands ^20.17.0 || >=22.9.0).
+# It is not about the lockfile: measured, 10.9.4 also strips the 42 `libc` lines on an
+# `npm install`, because only npm 11 writes them. What preserves the lock is `npm ci`.
 NPM_BOOTSTRAP_VERSION="10.9.4"
 BOOT_DIR="$REPO_ROOT/.npm-bootstrap"
 BOOT_NPM="$BOOT_DIR/bin/npm"
 BOOT_CLI="$BOOT_DIR/npm-$NPM_BOOTSTRAP_VERSION/package/bin/npm-cli.js"
 
-download() {  # download <url> <arquivo-destino>
+download() {  # download <url> <destination-file>
   local url="$1" out="$2"
   if command -v curl >/dev/null 2>&1; then
     if curl -fsSL --connect-timeout 15 -o "$out" "$url"; then return 0; fi
@@ -96,7 +98,7 @@ download() {  # download <url> <arquivo-destino>
 
 bootstrap_npm() {
   if [[ -x "$BOOT_NPM" && -f "$BOOT_CLI" ]]; then
-    return 0   # cache quente: nada é baixado
+    return 0   # warm cache: nothing is downloaded
   fi
 
   local node
@@ -105,7 +107,7 @@ bootstrap_npm() {
     node="$(command -v node 2>/dev/null || command -v nodejs 2>/dev/null || true)"
   fi
   if [[ -z "$node" ]]; then
-    NPM_ERROR="node não foi encontrado no PATH; sem node não há como preparar um npm local (instale o Node.js ou defina NODE=/caminho/para/node)."
+    NPM_ERROR="node was not found on PATH; without node there is no way to prepare a local npm (install Node.js or set NODE=/path/to/node)."
     return 1
   fi
 
@@ -113,28 +115,28 @@ bootstrap_npm() {
   local tmp
   mkdir -p "$BOOT_DIR"
   tmp="$(mktemp -d "$BOOT_DIR/.tmp.XXXXXX")" || {
-    NPM_ERROR="não consegui criar diretório temporário em $BOOT_DIR"
+    NPM_ERROR="could not create a temporary directory under $BOOT_DIR"
     return 1
   }
 
-  log "Preparando um npm local em .npm-bootstrap (npm $NPM_BOOTSTRAP_VERSION)"
+  log "Preparing a local npm in .npm-bootstrap (npm $NPM_BOOTSTRAP_VERSION)"
   if ! download "$url" "$tmp/npm.tgz"; then
     rm -rf "$tmp"
-    NPM_ERROR="falha ao baixar o npm $NPM_BOOTSTRAP_VERSION de $url (download não completou — rede indisponível? curl/wget ausentes?)"
+    NPM_ERROR="failed to download npm $NPM_BOOTSTRAP_VERSION from $url (the download did not complete — network unavailable? curl/wget missing?)"
     return 1
   fi
   if ! tar xzf "$tmp/npm.tgz" -C "$tmp"; then
     rm -rf "$tmp"
-    NPM_ERROR="o tarball do npm baixado não pôde ser descompactado (download corrompido?)"
+    NPM_ERROR="the downloaded npm tarball could not be unpacked (corrupted download?)"
     return 1
   fi
   if [[ ! -f "$tmp/package/bin/npm-cli.js" ]]; then
     rm -rf "$tmp"
-    NPM_ERROR="o pacote npm baixado não contém bin/npm-cli.js"
+    NPM_ERROR="the downloaded npm package does not contain bin/npm-cli.js"
     return 1
   fi
 
-  # só agora o cache passa a existir: um download que falhou não deixa lixo utilizável
+  # only now does the cache come into existence: a failed download leaves no usable litter
   rm -rf "$BOOT_DIR/npm-$NPM_BOOTSTRAP_VERSION"
   mkdir -p "$BOOT_DIR/npm-$NPM_BOOTSTRAP_VERSION" "$BOOT_DIR/bin"
   mv "$tmp/package" "$BOOT_DIR/npm-$NPM_BOOTSTRAP_VERSION/package"
@@ -142,7 +144,7 @@ bootstrap_npm() {
 
   cat > "$BOOT_NPM.new" <<EOF
 #!/bin/sh
-# gerado por start.sh — npm $NPM_BOOTSTRAP_VERSION local, sem instalação global
+# generated by start.sh — local npm $NPM_BOOTSTRAP_VERSION, no global install
 NODE_BIN="\${NODE:-$node}"
 [ -x "\$NODE_BIN" ] || NODE_BIN="\$(command -v node || command -v nodejs)"
 exec "\$NODE_BIN" "$BOOT_CLI" "\$@"
@@ -163,7 +165,7 @@ resolve_npm() {
 
 if [[ "$PRINT_NPM" == "1" ]]; then
   if ! resolve_npm; then
-    err "Não foi possível obter um npm: $NPM_ERROR"
+    err "Could not obtain an npm: $NPM_ERROR"
     exit 1
   fi
   printf '%s\n' "$NPM"
@@ -173,12 +175,12 @@ fi
 # ---- 1. Python / daemon ----------------------------------------------------
 PYTHON="${PYTHON:-$REPO_ROOT/.venv/bin/python}"
 if [[ ! -x "$PYTHON" ]]; then
-  log "Criando virtualenv em .venv"
+  log "Creating the virtualenv in .venv"
   python3 -m venv "$REPO_ROOT/.venv"
   PYTHON="$REPO_ROOT/.venv/bin/python"
 fi
 if ! "$PYTHON" -c "import websockets" >/dev/null 2>&1; then
-  log "Instalando deps do daemon (pip install -e '.[daemon]')"
+  log "Installing the daemon deps (pip install -e '.[daemon]')"
   "$PYTHON" -m pip install --quiet --upgrade pip
   "$PYTHON" -m pip install --quiet -e "$REPO_ROOT[daemon]"
 fi
@@ -186,15 +188,15 @@ fi
 # ---- 2. Frontend -----------------------------------------------------------
 DIST="$REPO_ROOT/web/dist"
 
-front_install() {  # roda com cwd em web/
+front_install() {  # runs with cwd inside web/
   if [[ -f package-lock.json ]]; then
-    log "npm ci (front)"
+    log "npm ci (front end)"
     if ! "$NPM" ci; then
-      warn "npm ci falhou (lock fora de sincronia com o package.json?); tentando npm install"
+      warn "npm ci failed (lock out of sync with package.json?); trying npm install"
       "$NPM" install
     fi
   else
-    log "npm install (front)"
+    log "npm install (front end)"
     "$NPM" install
   fi
 }
@@ -202,51 +204,51 @@ front_install() {  # roda com cwd em web/
 build_front() {
   ( cd "$REPO_ROOT/web"
     front_install
-    log "npm run build (gera web/dist)"; "$NPM" run build )
+    log "npm run build (produces web/dist)"; "$NPM" run build )
 }
 
 if [[ "$MODE" == "dev" ]]; then
   if ! resolve_npm; then
-    err "Modo --dev exige npm: $NPM_ERROR"
+    err "--dev mode requires npm: $NPM_ERROR"
     exit 1
   fi
-  # Mesma porta de entrada do prod (front_install): `ci` sobre o lock, fallback para
-  # `install`. O guard de node_modules sobrevive só aqui — `npm ci` apaga e refaz a
-  # árvore inteira, e --dev é o comando que se reinicia dezenas de vezes por hora —
-  # mas --rebuild continua significando "reinstala" nos dois modos.
+  # The same entry point as prod (front_install): `ci` over the lock, falling back to
+  # `install`. The node_modules guard survives only here — `npm ci` wipes and rebuilds the
+  # whole tree, and --dev is the command restarted dozens of times an hour — but --rebuild
+  # still means "reinstall" in both modes.
   if [[ "$BUILD" == "force" || ! -d "$REPO_ROOT/web/node_modules" ]]; then
     ( cd "$REPO_ROOT/web" && front_install )
   else
-    log "web/node_modules já existe (use --rebuild para reinstalar)"
+    log "web/node_modules already exists (use --rebuild to reinstall)"
   fi
 elif [[ "$BUILD" == "skip" ]]; then
-  [[ -d "$DIST" ]] || { err "web/dist não existe e --no-build foi usado. Rode sem --no-build."; exit 1; }
-  log "Pulando build; servindo web/dist existente"
+  [[ -d "$DIST" ]] || { err "web/dist does not exist and --no-build was used. Run without --no-build."; exit 1; }
+  log "Skipping the build; serving the existing web/dist"
 elif [[ "$BUILD" == "force" ]]; then
   if ! resolve_npm; then
-    err "--rebuild exige npm: $NPM_ERROR"
+    err "--rebuild requires npm: $NPM_ERROR"
     exit 1
   fi
   build_front
 else # auto
   if resolve_npm; then
     if [[ -d "$DIST" ]]; then
-      log "web/dist já existe (use --rebuild para reconstruir)"
+      log "web/dist already exists (use --rebuild to rebuild it)"
     else
       build_front
     fi
   elif [[ -d "$DIST" ]]; then
-    warn "npm não pôde ser preparado ($NPM_ERROR)"
-    warn "servindo o web/dist existente SEM rebuildar — mudanças no front não aparecem."
+    warn "npm could not be prepared ($NPM_ERROR)"
+    warn "serving the existing web/dist WITHOUT rebuilding — front-end changes will not show up."
   else
-    err "Sem web/dist e sem npm utilizável: $NPM_ERROR"
-    err "Instale Node.js (+ rede para o bootstrap do npm) e rode ./start.sh --rebuild,"
-    err "ou copie um web/dist pronto."
+    err "No web/dist and no usable npm: $NPM_ERROR"
+    err "Install Node.js (+ network access for the npm bootstrap) and run ./start.sh --rebuild,"
+    err "or copy in a prebuilt web/dist."
     exit 1
   fi
 fi
 
-# ---- 3. env do daemon ------------------------------------------------------
+# ---- 3. daemon env ---------------------------------------------------------
 export GRAPHAGENTS_SOCKET="${GRAPHAGENTS_SOCKET:-/tmp/graph-agents.sock}"
 export GRAPHAGENTS_HTTP_PORT="${GRAPHAGENTS_HTTP_PORT:-8080}"
 export GRAPHAGENTS_PROJECT_ROOT="${GRAPHAGENTS_PROJECT_ROOT:-$PWD}"
@@ -254,23 +256,23 @@ export GRAPHAGENTS_PROJECT_ROOT="${GRAPHAGENTS_PROJECT_ROOT:-$PWD}"
 echo
 log "graph-agents"
 echo "  ingest socket : $GRAPHAGENTS_SOCKET"
-echo "  page + socket : http://localhost:$GRAPHAGENTS_HTTP_PORT (ws em /ws)"
+echo "  page + socket : http://localhost:$GRAPHAGENTS_HTTP_PORT (ws at /ws)"
 echo "  project root  : $GRAPHAGENTS_PROJECT_ROOT"
-echo "  hooks         : copie o bloco \"hooks\" de config/settings.json para o"
-echo "                  .claude/settings.json do projeto que você quer observar."
+echo "  hooks         : copy the \"hooks\" block from config/settings.json into the"
+echo "                  .claude/settings.json of the project you want to observe."
 echo
 
-# ---- 4. subir --------------------------------------------------------------
+# ---- 4. start --------------------------------------------------------------
 if [[ "$MODE" == "dev" ]]; then
-  log "Subindo daemon (background) + Vite dev server (http://localhost:5173)"
+  log "Starting the daemon (background) + Vite dev server (http://localhost:5173)"
   "$PYTHON" -m daemon.server &
   DAEMON_PID=$!
-  # derruba o daemon quando o vite (foreground) encerrar
+  # bring the daemon down when vite (in the foreground) exits
   trap 'kill "$DAEMON_PID" 2>/dev/null || true' EXIT INT TERM
   ( cd "$REPO_ROOT/web" && exec "$NPM" run dev )
 else
   echo "  http (front)  : http://localhost:$GRAPHAGENTS_HTTP_PORT"
   echo
-  log "Subindo daemon (Ctrl-C para parar)"
+  log "Starting the daemon (Ctrl-C to stop)"
   exec "$PYTHON" -m daemon.server
 fi

@@ -6,7 +6,7 @@ Motivation, from real ``PostToolUse`` payloads captured on Claude Code 2.1.229:
     else -- the keys ``agent_id`` / ``agent_type`` simply do not exist;
   * a tool call made by a **subagent** carries the *same* ``session_id`` plus
     ``agent_id`` (e.g. ``"a747fec535c143044"``) and ``agent_type`` (e.g.
-    ``"desenvolvedor-backend"``).
+    ``"developer-backend"``).
 
 ``normalize_event`` currently derives the actor from ``session_id`` alone, so
 every subagent of a session collapses into one figure: five specialists working
@@ -35,7 +35,7 @@ from graphagents.normalize import Event, fs_event, normalize_event, seed_event
 ROOT = "/home/user/project"
 SESSION = "sess-abc123"
 SUBAGENT_ID = "a747fec535c143044"
-SUBAGENT_TYPE = "desenvolvedor-backend"
+SUBAGENT_TYPE = "developer-backend"
 
 
 def _orchestrator_hook(file_path: str = f"{ROOT}/src/app.py") -> dict:
@@ -84,12 +84,12 @@ def test_two_subagents_of_one_session_are_two_distinct_actors():
     # The whole point of the feature: same session_id, different agent_id, and
     # the graph must draw two figures rather than one.
     tester = normalize_event(
-        _subagent_hook(agent_id="id-tester", agent_type="desenvolvedor-tester"),
+        _subagent_hook(agent_id="id-tester", agent_type="developer-tester"),
         known_paths=set(),
         project_root=ROOT,
     )
     backend = normalize_event(
-        _subagent_hook(agent_id="id-backend", agent_type="desenvolvedor-backend"),
+        _subagent_hook(agent_id="id-backend", agent_type="developer-backend"),
         known_paths=set(),
         project_root=ROOT,
     )
@@ -194,7 +194,7 @@ def test_the_label_is_not_part_of_the_identity():
     # Same subagent, renamed type: still one actor, or a rename would fork the
     # figure in two mid-session.
     first = normalize_event(
-        _subagent_hook(agent_type="desenvolvedor-backend"),
+        _subagent_hook(agent_type="developer-backend"),
         known_paths=set(),
         project_root=ROOT,
     )

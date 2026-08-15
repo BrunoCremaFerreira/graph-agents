@@ -361,7 +361,7 @@ const SUBAGENT_ID = "a747fec535c143044";
 const SESSION_ID = "3f7a1c9e-2b4d-4f6a-8c1e-9b7d4c2a5e01";
 
 /** Every agent_type this project actually defines; all must survive whole. */
-const REAL_AGENT_TYPES = ["desenvolvedor-backend", "desenvolvedor-frontend", "desenvolvedor-tester"];
+const REAL_AGENT_TYPES = ["developer-backend", "developer-frontend", "developer-tester"];
 
 describe("shortAgentName", () => {
   it("keeps only the tail of a session UUID, which is what tells two apart", () => {
@@ -386,7 +386,7 @@ describe("shortAgentName", () => {
 describe("actorDisplayName", () => {
   it("captions a subagent with its agent type instead of its opaque id", () => {
     // The defect: without the label the figure reads "a747fec5".
-    expect(actorDisplayName("desenvolvedor-backend", SUBAGENT_ID)).toBe("desenvolvedor-backend");
+    expect(actorDisplayName("developer-backend", SUBAGENT_ID)).toBe("developer-backend");
   });
 
   it("falls back to the shortened session id when the agent has no type", () => {
@@ -400,7 +400,7 @@ describe("actorDisplayName", () => {
   });
 
   it("trims the padding off a label before showing it", () => {
-    expect(actorDisplayName("  desenvolvedor-tester\n", SUBAGENT_ID)).toBe("desenvolvedor-tester");
+    expect(actorDisplayName("  developer-tester\n", SUBAGENT_ID)).toBe("developer-tester");
   });
 
   it("captions nobody when there is neither a type nor an agent", () => {
@@ -417,20 +417,20 @@ describe("actorDisplayName", () => {
   });
 
   it("caps the caption so a long type cannot run across the screen", () => {
-    const long = "desenvolvedor-especialista-em-integracao-continua-e-deploy";
+    const long = "developer-continuous-integration-and-deployment-specialist";
 
     expect(actorDisplayName(long, SUBAGENT_ID).length).toBeLessThanOrEqual(MAX_ACTOR_LABEL_CHARS);
   });
 
   it("keeps the head of a truncated caption, which is the part that identifies it", () => {
-    const long = "desenvolvedor-especialista-em-integracao-continua-e-deploy";
+    const long = "developer-continuous-integration-and-deployment-specialist";
 
-    expect(actorDisplayName(long, SUBAGENT_ID).startsWith("desenvolvedor")).toBe(true);
+    expect(actorDisplayName(long, SUBAGENT_ID).startsWith("developer")).toBe(true);
   });
 
   it("leaves room for the longest agent type plus a little headroom", () => {
-    // 22 chars ("desenvolvedor-frontend") is the longest name in use; a cap at
-    // or below it would truncate a name this project shows every day.
+    // 18 chars ("developer-frontend") is the longest name in use; the cap
+    // sits above it so an everyday name is never truncated.
     expect(MAX_ACTOR_LABEL_CHARS).toBe(24);
   });
 

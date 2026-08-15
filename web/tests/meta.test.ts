@@ -48,7 +48,7 @@ function validEvent(): Record<string, unknown> {
 
 /** A subagent's event frame: opaque id plus the readable `label`. */
 function labelledEvent(): Record<string, unknown> {
-  return { ...validEvent(), agent: "a1b2c3d4e5f60718", label: "desenvolvedor-backend" };
+  return { ...validEvent(), agent: "a1b2c3d4e5f60718", label: "developer-backend" };
 }
 
 describe("parseMeta", () => {

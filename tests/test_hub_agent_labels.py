@@ -28,7 +28,7 @@ from daemon.server import EventHub
 ROOT = "/proj"
 SESSION = "sess-abc"
 SUBAGENT_ID = "a747fec535c143044"
-SUBAGENT_TYPE = "desenvolvedor-tester"
+SUBAGENT_TYPE = "developer-tester"
 
 #: Every key the frontend already reads off the wire. New fields may be added;
 #: none of these may disappear or be renamed.
@@ -173,12 +173,12 @@ def test_the_next_actor_replaces_the_previous_one():
     # Attribution is a single "who acted last" slot: once the backend agent
     # writes, changes stop belonging to the tester.
     hub = EventHub(project_root=ROOT)
-    hub.ingest_line(_hook(agent_id="id-tester", agent_type="desenvolvedor-tester"))
+    hub.ingest_line(_hook(agent_id="id-tester", agent_type="developer-tester"))
     hub.ingest_line(
         _hook(
             file_path=f"{ROOT}/other.py",
             agent_id="id-backend",
-            agent_type="desenvolvedor-backend",
+            agent_type="developer-backend",
         )
     )
 
@@ -186,7 +186,7 @@ def test_the_next_actor_replaces_the_previous_one():
 
     event = _sent(hub)[-1]
     assert event["agent"] == "id-backend"
-    assert event["label"] == "desenvolvedor-backend"
+    assert event["label"] == "developer-backend"
 
 
 def test_an_expired_attribution_drops_the_label_with_the_agent():

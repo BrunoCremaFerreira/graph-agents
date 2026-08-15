@@ -25,8 +25,8 @@ Each Gource "user" (the on-screen actor/avatar) represents **one agent**.
    exceptions.
 2. **All planning and implementation are done by the specialist agents together, never by the
    orchestrator alone.** The main agent orchestrates and delegates; it does not plan or
-   implement on its own. All work goes through the specialists: `desenvolvedor-tester`
-   (tests/RED), `desenvolvedor-backend` (Python) and/or `desenvolvedor-frontend` (TypeScript),
+   implement on its own. All work goes through the specialists: `developer-tester`
+   (tests/RED), `developer-backend` (Python) and/or `developer-frontend` (TypeScript),
    collaborating according to the layer involved.
 3. **NEVER commit or push without the user asking for it.** Not at the end of a task, not
    because the work is finished, not because the tree is dirty and tests are green. Leave
@@ -34,6 +34,18 @@ Each Gource "user" (the on-screen actor/avatar) represents **one agent**.
    history and what gets published. This covers `git commit`, `git push`, `git merge`,
    branch deletion, tags, and opening PRs. "Implement X" is not permission to commit X, and
    permission given once does not carry to the next change.
+4. **English is the only language in this repository.** Identifiers, function and file names,
+   comments, docstrings, commit messages, agent definitions, and — this is the one that keeps
+   getting missed — every string a human ends up reading: HUD text, `start.sh` log lines and
+   `--help` output, error messages. Half-Portuguese was the actual state of this repo (the
+   git-status panel counted changes in Portuguese under an English keys legend; `start.sh`
+   explained itself entirely in Portuguese), and mixing is worse than either language alone:
+   the reader switches mid-sentence, and grepping for a message seen on screen finds nothing.
+   `tests/test_language_policy.py` enforces this over the authored sources — it fails on any
+   accented Latin letter or a short list of unaccented Portuguese words, so do not quote the
+   forbidden text in a file it scans, describe it. The `tests/` trees are exempt only because
+   encoding tests need real non-ASCII fixtures, never as licence for prose in another
+   language. Talking to the user in Portuguese is fine — writing it into a file is not.
 
 ## Architecture
 
@@ -71,8 +83,8 @@ actually carries was settled by capture, not by reasoning — measured against C
 - A tool call made by the **orchestrator** carries `session_id` and **no** `agent_id` /
   `agent_type` — the keys are absent, not empty.
 - A tool call made by a **subagent** carries the same `session_id` **plus** `agent_id` (an
-  opaque per-subagent id) and `agent_type` (the readable name: `desenvolvedor-backend`,
-  `desenvolvedor-tester`, ...). Subagent tool calls **do** fire the hook; this was the open
+  opaque per-subagent id) and `agent_type` (the readable name: `developer-backend`,
+  `developer-tester`, ...). Subagent tool calls **do** fire the hook; this was the open
   question, and the answer is yes.
 
 So `actor_of` (in `normalize.py`, shared with the daemon) resolves the actor as `agent_id`
@@ -157,16 +169,16 @@ tail -f /tmp/claude-gource.pipe | gource --realtime --log-format custom \
 
 Custom agents live in `.claude/agents/`:
 
-- **`desenvolvedor-backend`** — implements Python (adapter, hook scripts, aggregator daemon, CLI).
-- **`desenvolvedor-frontend`** — implements TypeScript under `web/` (three.js renderer, the
+- **`developer-backend`** — implements Python (adapter, hook scripts, aggregator daemon, CLI).
+- **`developer-frontend`** — implements TypeScript under `web/` (three.js renderer, the
   pure model/layout/view/label modules, WebSocket client, UI).
-- **`desenvolvedor-tester`** — writes tests only, **never** production code; drives development via TDD.
+- **`developer-tester`** — writes tests only, **never** production code; drives development via TDD.
 
 This project follows **Test-Driven Development**. The intended loop:
 
-1. **RED** — `desenvolvedor-tester` writes the smallest failing test that specifies a behavior
+1. **RED** — `developer-tester` writes the smallest failing test that specifies a behavior
    (pytest for backend, vitest for frontend) and confirms it fails for the right reason.
-2. **GREEN** — a `desenvolvedor-*` agent writes the minimal implementation to make it pass.
+2. **GREEN** — a `developer-*` agent writes the minimal implementation to make it pass.
 3. **REFACTOR** — with the suite green, refactor safely; tests must stay green.
 
 Subagents don't call each other directly — the main session orchestrates the hand-off

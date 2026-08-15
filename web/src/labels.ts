@@ -257,9 +257,9 @@ export function selectFileLabels(
 /**
  * Longest caption allowed over an agent's figure.
  *
- * "desenvolvedor-frontend" is 22 characters, the longest agent type this
- * project defines; the cap sits just above it so an everyday name is shown
- * whole while an invented one cannot run across the screen.
+ * "developer-frontend" is 18 characters, the longest agent type this
+ * project defines; the cap sits above it so an everyday name is shown whole
+ * while an invented one cannot run across the screen.
  */
 export const MAX_ACTOR_LABEL_CHARS = 24;
 

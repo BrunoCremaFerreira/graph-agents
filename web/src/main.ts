@@ -275,7 +275,7 @@ function boot(): void {
       // state alone. `openSearch` returns a CLEAN state by contract, so
       // applying it here would wipe a live query's matches and highlights while
       // the field still showed the old text -- and `setStatus`, which reads the
-      // field, would then report "nenhum resultado" over a search that had 12.
+      // field, would then report "no matches" over a search that had 12.
       // The selection is what lets the next keystroke replace the query, and
       // that fires `input`, which goes through `setQuery`.
       searchHud?.open();

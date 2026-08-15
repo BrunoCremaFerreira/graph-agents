@@ -56,10 +56,10 @@ function buildRow(row: StatusRow): HTMLLIElement {
   return item;
 }
 
-/** `N alterações`, plus what the cap left out. */
+/** `N changes`, plus what the cap left out. */
 function countText(total: number, hidden: number): string {
-  const base = total === 1 ? "1 alteração" : `${total} alterações`;
-  return hidden > 0 ? `${base} · +${hidden} ocultos` : base;
+  const base = total === 1 ? "1 change" : `${total} changes`;
+  return hidden > 0 ? `${base} · +${hidden} hidden` : base;
 }
 
 /**

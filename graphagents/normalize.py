@@ -61,7 +61,7 @@ class Event:
             ``"seed"`` (the tree snapshot taken at boot) or ``"watch"`` (the
             filesystem watcher).
         label: Readable name for the actor (``agent_type``, e.g.
-            ``"desenvolvedor-backend"``), for display only. Last field on
+            ``"developer-backend"``), for display only. Last field on
             purpose: every existing positional construction keeps working.
     """
 

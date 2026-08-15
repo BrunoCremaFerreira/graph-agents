@@ -1,5 +1,5 @@
 ---
-name: desenvolvedor-tester
+name: developer-tester
 description: Writes the failing tests (RED) that specify a behavior, for backend (pytest) or frontend (vitest). Use this FIRST for every feature, fix, or refactor — before any implementation agent is asked to write code. Also use to confirm a suite is green, or to add coverage for a bug that slipped through. Never writes production code.
 tools: Read, Write, Edit, Bash, Glob, Grep
 model: inherit

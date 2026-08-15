@@ -2,7 +2,7 @@
  * Contract tests (RED) for parseEvent.
  *
  * They specify validation of raw WebSocket messages into AgentEvent. Expected
- * to FAIL until `desenvolvedor-frontend` implements parseEvent (currently a
+ * to FAIL until `developer-frontend` implements parseEvent (currently a
  * NotImplementedError stub). One failure reason per test.
  */
 

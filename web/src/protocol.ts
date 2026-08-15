@@ -4,7 +4,7 @@
  * STUB written by the tester agent for the RED phase of TDD. The `AgentEvent`
  * type fixes the shared contract; `parseEvent` is left unimplemented so the
  * specifying tests fail for the right reason. Implementation belongs to
- * `desenvolvedor-frontend`.
+ * `developer-frontend`.
  */
 
 /** Operation kind: Added, Modified, Deleted. */
@@ -42,7 +42,7 @@ export interface AgentEvent {
   origin: EventOrigin;
   /**
    * Human-readable name of the actor (the hook's `agent_type`, e.g.
-   * `"desenvolvedor-backend"`), for DISPLAY only. Never an identity: `agent`
+   * `"developer-backend"`), for DISPLAY only. Never an identity: `agent`
    * remains the actor key and the seed of its color, so two subagents of the
    * same type stay two figures. Absent on the wire means `""`, which is also
    * the legitimate orchestrator case (its payload carries no `agent_type`).

@@ -155,7 +155,7 @@ Copy the `"hooks"` block from [`config/settings.json`](config/settings.json) int
       {
         "matcher": "Write|Edit|MultiEdit|Bash",
         "hooks": [
-          { "type": "command", "command": "python3 /home/brn/projects/graph-agents/hooks/emit_event.py" }
+          { "type": "command", "command": "python3 /path/to/rhizome-graph/hooks/emit_event.py" }
         ]
       }
     ]
@@ -180,7 +180,7 @@ a healthy setup with nothing to report. To tell them apart, point `RHIZOME_DEBUG
 a file in the observed project's hook command:
 
 ```json
-{ "type": "command", "command": "RHIZOME_DEBUG_LOG=/tmp/rhizome-graph-hook.log python3 /home/brn/projects/graph-agents/hooks/emit_event.py" }
+{ "type": "command", "command": "RHIZOME_DEBUG_LOG=/tmp/rhizome-graph-hook.log python3 /path/to/rhizome-graph/hooks/emit_event.py" }
 ```
 
 Failures are appended there. Unset, the hook stays completely silent.

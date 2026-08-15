@@ -1,4 +1,4 @@
-"""Contract tests (RED) for graphagents.repo.
+"""Contract tests (RED) for rhizome_graph.repo.
 
 Motivation: the HUD at the bottom of the screen must say *which* directory is
 being watched and *which branch* it is on. Without it a viewer looking at a
@@ -41,8 +41,8 @@ import pytest
 # the name: while it does not exist yet, a missing name in this import would
 # collapse the twenty tests above into a collection error instead of leaving
 # them green.
-from graphagents import repo
-from graphagents.repo import display_root, parse_head, read_branch, resolve_git_dir
+from rhizome_graph import repo
+from rhizome_graph.repo import display_root, parse_head, read_branch, resolve_git_dir
 
 
 def _plain_repo(root: Path, head: str = "ref: refs/heads/main\n") -> Path:

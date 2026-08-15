@@ -10,12 +10,12 @@ hard rules:
      broken socket -- it writes nothing to stdout and always exits 0, so it can
      never disrupt the user's Claude Code session.
 
-The path/op classification lives in :mod:`graphagents.normalize`; the daemon
+The path/op classification lives in :mod:`rhizome_graph.normalize`; the daemon
 owns the "already seen" set that decides add-vs-modify, so this hook forwards the
 raw payload untouched and lets the daemon normalize and de-duplicate.
 
 Transport: one JSON line per event over a Unix domain socket whose path comes
-from ``GRAPHAGENTS_SOCKET`` (default ``/tmp/graph-agents.sock``).
+from ``RHIZOME_SOCKET`` (default ``/tmp/rhizome-graph.sock``).
 """
 
 from __future__ import annotations
@@ -25,16 +25,16 @@ import os
 import socket
 import sys
 
-DEFAULT_SOCKET_PATH = "/tmp/graph-agents.sock"
+DEFAULT_SOCKET_PATH = "/tmp/rhizome-graph.sock"
 _CONNECT_TIMEOUT_SECONDS = 0.5
 
 
 def _socket_path() -> str:
-    return os.environ.get("GRAPHAGENTS_SOCKET", DEFAULT_SOCKET_PATH)
+    return os.environ.get("RHIZOME_SOCKET", DEFAULT_SOCKET_PATH)
 
 
 def _log_failure(error: BaseException) -> None:
-    """Append `error` to ``GRAPHAGENTS_DEBUG_LOG``, if that variable is set.
+    """Append `error` to ``RHIZOME_DEBUG_LOG``, if that variable is set.
 
     Silence is the rule, but total silence made the commonest failure -- the
     daemon simply not running -- indistinguishable from a healthy setup with
@@ -42,7 +42,7 @@ def _log_failure(error: BaseException) -> None:
     it stays off unless the variable is set. Failing to write it is itself
     ignored: diagnostics must never become the thing that breaks the session.
     """
-    path = os.environ.get("GRAPHAGENTS_DEBUG_LOG")
+    path = os.environ.get("RHIZOME_DEBUG_LOG")
     if not path:
         return
     try:
@@ -58,7 +58,7 @@ def _log_failure(error: BaseException) -> None:
 
 
 def _trace(raw: str) -> None:
-    """Append `raw` to ``GRAPHAGENTS_TRACE_LOG``, if that variable is set.
+    """Append `raw` to ``RHIZOME_TRACE_LOG``, if that variable is set.
 
     Sibling of :func:`_log_failure`: that one records *failures*, this one
     records *arrivals*. It exists to answer a question the pipeline otherwise
@@ -74,7 +74,7 @@ def _trace(raw: str) -> None:
     Writing it is best-effort -- diagnostics must never become the thing that
     breaks the session.
     """
-    path = os.environ.get("GRAPHAGENTS_TRACE_LOG")
+    path = os.environ.get("RHIZOME_TRACE_LOG")
     if not path:
         return
     try:

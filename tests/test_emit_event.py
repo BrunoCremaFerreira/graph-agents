@@ -28,7 +28,7 @@ def _run_hook(stdin_bytes: bytes) -> subprocess.CompletedProcess:
     env = dict(os.environ)
     # Point the hook at a socket path that cannot exist, to assert it still
     # exits 0 when the daemon is unavailable.
-    env["GRAPHAGENTS_SOCKET"] = "/tmp/graphagents-nonexistent-daemon.sock"
+    env["RHIZOME_SOCKET"] = "/tmp/rhizome-graph-nonexistent-daemon.sock"
     return subprocess.run(
         [sys.executable, HOOK_SCRIPT],
         input=stdin_bytes,

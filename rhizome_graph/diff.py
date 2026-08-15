@@ -6,7 +6,7 @@ delta, so the panel opened by a click asks this module for it. ``None`` is not a
 error signal: it means "there is no diff, show the content instead", which is why
 every failure mode collapses into it.
 
-**Why this does not contradict `graphagents.repo`.** That module states the rule
+**Why this does not contradict `rhizome_graph.repo`.** That module states the rule
 "files, never `subprocess`", and keeps it: the branch is re-read every couple of
 seconds by a background poll, forking `git` at that rate is pure waste, and the
 answer is a dozen bytes sitting in `.git/HEAD`. Neither half of that applies
@@ -26,14 +26,14 @@ Nothing here raises and nothing here hangs. An exception would kill the task
 serving that browser; a wait on `git` -- a repository mid-rebase with `index.lock`
 held can block for as long as the other process pleases -- would freeze every
 other connected client. That discipline is not written twice: it lives in
-:mod:`graphagents.gitcmd`, which :mod:`graphagents.status` -- the other, later
+:mod:`rhizome_graph.gitcmd`, which :mod:`rhizome_graph.status` -- the other, later
 caller -- runs through as well, so a fix to the way a hung `git` is abandoned
 applies to both.
 """
 
 from __future__ import annotations
 
-from graphagents.gitcmd import run_git
+from rhizome_graph.gitcmd import run_git
 
 #: How long `git` is given before it is abandoned.
 DEFAULT_TIMEOUT_SECONDS = 3.0
@@ -75,7 +75,7 @@ async def git_diff(
     binary, a root that was removed, a path carrying a NUL byte straight off the
     network, a non-zero exit, a `git` that hangs, an empty diff. The caller has
     one thing to do with all of them: show the file's content instead. The first
-    six are :func:`graphagents.gitcmd.run_git`'s ``None``; the last one is this
+    six are :func:`rhizome_graph.gitcmd.run_git`'s ``None``; the last one is this
     module's own, because "`git` ran and printed nothing" is a successful call.
     """
     stdout = await run_git(diff_command(relative_path), cwd=root, timeout=timeout)

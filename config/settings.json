@@ -1,5 +1,5 @@
 {
-  "//": "graph-agents capture hooks. Copy the 'hooks' block into the OBSERVED",
+  "//": "rhizome-graph capture hooks. Copy the 'hooks' block into the OBSERVED",
   "//instructions": [
     "project's .claude/settings.json. Adjust the absolute path to emit_event.py.",
     "The hook only FORWARDS the raw PostToolUse JSON to the daemon over a Unix",
@@ -19,8 +19,8 @@
     "edit lands. Reads are hook-only by nature - the filesystem watcher cannot see",
     "them (atime is unreliable under relatime, and it does not subscribe to access",
     "events), so without this block there is no read glow at all.",
-    "Env vars (optional): GRAPHAGENTS_SOCKET overrides the socket path and must",
-    "match the daemon; default is /tmp/graph-agents.sock. GRAPHAGENTS_DEBUG_LOG",
+    "Env vars (optional): RHIZOME_SOCKET overrides the socket path and must",
+    "match the daemon; default is /tmp/rhizome-graph.sock. RHIZOME_DEBUG_LOG",
     "names a file to append hook failures to - the only way to tell 'daemon down'",
     "from 'nothing happened'. Prefix it on the command below to enable it."
   ],

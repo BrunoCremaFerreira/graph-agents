@@ -30,7 +30,7 @@ from __future__ import annotations
 
 import pytest
 
-from graphagents.normalize import Event, fs_event, normalize_event, seed_event
+from rhizome_graph.normalize import Event, fs_event, normalize_event, seed_event
 
 ROOT = "/home/user/project"
 SESSION = "sess-abc123"

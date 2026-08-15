@@ -1,4 +1,4 @@
-# graph-agents
+# rhizome-graph
 
 **Real-time web visualization** of what each Claude Code agent is doing — creating, editing,
 and deleting files and directories — rendered with the look of
@@ -25,7 +25,7 @@ flowchart LR
     B -->|"JSON line<br/>over Unix socket"| C["daemon/server.py"]
     F["project files"] -->|"inotify"| W["daemon/watcher.py"]
     W -->|"what changed"| C
-    T["graphagents/tree.py"] -->|"initial snapshot"| C
+    T["rhizome_graph/tree.py"] -->|"initial snapshot"| C
     C -->|"event<br/>over WebSocket"| D["web/ (three.js)<br/>Gource-style renderer"]
     C -->|"HTTP :8080"| D
 ```
@@ -37,7 +37,7 @@ nothing about authorship. The daemon combines them: a filesystem change that lan
 few seconds of a hook inherits that hook's agent, so `cp src/*.md docs/` draws the agent's
 beam at each file actually copied.
 
-1. **Seed** — at boot the daemon walks `GRAPHAGENTS_PROJECT_ROOT` (`graphagents/tree.py`,
+1. **Seed** — at boot the daemon walks `RHIZOME_PROJECT_ROOT` (`rhizome_graph/tree.py`,
    skipping `.git`, `node_modules`, build output) and publishes the existing tree. The page
    opens on the project, not on a blank field. Every client gets this snapshot on connect,
    however long the daemon has been up.
@@ -176,11 +176,11 @@ actor attached.
 ### When nothing shows up
 
 The hook swallows every error by design, so a daemon that is not running looks exactly like
-a healthy setup with nothing to report. To tell them apart, point `GRAPHAGENTS_DEBUG_LOG` at
+a healthy setup with nothing to report. To tell them apart, point `RHIZOME_DEBUG_LOG` at
 a file in the observed project's hook command:
 
 ```json
-{ "type": "command", "command": "GRAPHAGENTS_DEBUG_LOG=/tmp/graph-agents-hook.log python3 /home/brn/projects/graph-agents/hooks/emit_event.py" }
+{ "type": "command", "command": "RHIZOME_DEBUG_LOG=/tmp/rhizome-graph-hook.log python3 /home/brn/projects/graph-agents/hooks/emit_event.py" }
 ```
 
 Failures are appended there. Unset, the hook stays completely silent.
@@ -193,23 +193,23 @@ Environment variables (all optional):
 
 | Variable | Default | Description |
 |---|---|---|
-| `GRAPHAGENTS_SOCKET` | `/tmp/graph-agents.sock` | Ingest Unix socket (hook ↔ daemon). |
-| `GRAPHAGENTS_HTTP_PORT` | `8080` | Single port serving `web/dist` **and** the WebSocket at `/ws`. |
-| `GRAPHAGENTS_PROJECT_ROOT` | cwd | Root the daemon seeds, watches, and makes paths relative to. |
-| `GRAPHAGENTS_DEBUG_LOG` | _unset_ | Set on the **hook** to append its failures to that file. Unset = total silence. |
+| `RHIZOME_SOCKET` | `/tmp/rhizome-graph.sock` | Ingest Unix socket (hook ↔ daemon). |
+| `RHIZOME_HTTP_PORT` | `8080` | Single port serving `web/dist` **and** the WebSocket at `/ws`. |
+| `RHIZOME_PROJECT_ROOT` | cwd | Root the daemon seeds, watches, and makes paths relative to. |
+| `RHIZOME_DEBUG_LOG` | _unset_ | Set on the **hook** to append its failures to that file. Unset = total silence. |
 
 The socket must match between the hook and the daemon; if you change one, change the other.
 
-`GRAPHAGENTS_PROJECT_ROOT` is the project you want to *watch* — set it to the observed
-project, not to `graph-agents` itself:
+`RHIZOME_PROJECT_ROOT` is the project you want to *watch* — set it to the observed
+project, not to `rhizome-graph` itself:
 
 ```bash
-GRAPHAGENTS_PROJECT_ROOT=/path/to/observed/project ./start.sh
+RHIZOME_PROJECT_ROOT=/path/to/observed/project ./start.sh
 ```
 
-`GRAPHAGENTS_WS_PORT` is obsolete: the page and the WebSocket share one port, so the browser
+`RHIZOME_WS_PORT` is obsolete: the page and the WebSocket share one port, so the browser
 derives the socket URL from the origin it loaded from. Viewing over SSH or VS Code remote
-therefore needs only `GRAPHAGENTS_HTTP_PORT` forwarded — a hard-coded `localhost` WebSocket
+therefore needs only `RHIZOME_HTTP_PORT` forwarded — a hard-coded `localhost` WebSocket
 port would otherwise resolve to the *viewer's* machine and never connect.
 
 ---
@@ -217,8 +217,8 @@ port would otherwise resolve to the *viewer's* machine and never connect.
 ## Project structure
 
 ```
-graphagents/normalize.py   # pure core: hook JSON -> Event (defensive, never raises)
-graphagents/tree.py        # boot snapshot of the project tree (the seed events)
+rhizome_graph/normalize.py   # pure core: hook JSON -> Event (defensive, never raises)
+rhizome_graph/tree.py        # boot snapshot of the project tree (the seed events)
 hooks/emit_event.py        # hook: stdlib, forwards the event, always exit 0
 daemon/server.py           # asyncio: ingest + seed + attribution + WebSocket + HTTP
 daemon/watcher.py          # inotify watcher: what changed, whoever changed it

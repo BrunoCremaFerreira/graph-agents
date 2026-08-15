@@ -1,9 +1,9 @@
 """Running `git` safely from the event loop -- the one place that forks it.
 
-Two callers need an answer only `git` can give: :mod:`graphagents.diff` (the
-pending delta of one file, once per click) and :mod:`graphagents.status` (the
+Two callers need an answer only `git` can give: :mod:`rhizome_graph.diff` (the
+pending delta of one file, once per click) and :mod:`rhizome_graph.status` (the
 pending changes of the whole tree, on a timer). Everything *else* in this project
-reads files instead -- see the doctrine in :mod:`graphagents.repo` -- and both
+reads files instead -- see the doctrine in :mod:`rhizome_graph.repo` -- and both
 exceptions are documented where they live.
 
 What they share is not the argv but the discipline around it, and every line of

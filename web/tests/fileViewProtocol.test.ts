@@ -63,7 +63,7 @@ function validEvent(): Record<string, unknown> {
 }
 
 function validMeta(): Record<string, unknown> {
-  return { kind: "meta", root: "~/projects/graph-agents", branch: "development" };
+  return { kind: "meta", root: "~/projects/rhizome-graph", branch: "development" };
 }
 
 function validCompletion(): Record<string, unknown> {

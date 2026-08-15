@@ -3,8 +3,8 @@
 
 Two servers share one event loop:
 
-  * **Ingest** -- a Unix domain socket (``GRAPHAGENTS_SOCKET``, default
-    ``/tmp/graph-agents.sock``) that receives newline-delimited JSON hook
+  * **Ingest** -- a Unix domain socket (``RHIZOME_SOCKET``, default
+    ``/tmp/rhizome-graph.sock``) that receives newline-delimited JSON hook
     payloads from :mod:`hooks.emit_event`. Each line is normalized here, which
     is also where the "already seen paths" set lives (single source of truth for
     add-vs-modify), so the hook stays a dumb, dependency-free forwarder.
@@ -13,7 +13,7 @@ Two servers share one event loop:
     of the most recent events so the graph never starts empty.
 
 The WebSocket is no longer output-only. The observed root used to be frozen at
-boot by ``GRAPHAGENTS_PROJECT_ROOT``, so watching a second project meant killing
+boot by ``RHIZOME_PROJECT_ROOT``, so watching a second project meant killing
 the daemon; the page can now retype it, which means frames also travel *inbound*:
 ``{"kind":"complete"}`` (answer a ``Tab``, because only the daemon can read the
 daemon's disk), ``{"kind":"setRoot"}`` (observe another project) and
@@ -27,11 +27,11 @@ Inbound commands are **loopback-only by default** (:func:`control_allowed`):
 ``file`` hands over file *contents*, so exempting the latter because "it only
 reads" would turn an open port into a file server for the whole project. An
 SSH tunnel and VS Code port forwarding both arrive as loopback, so the ordinary
-remote setup keeps working untouched; ``GRAPHAGENTS_ALLOW_REMOTE_CONTROL=1``
+remote setup keeps working untouched; ``RHIZOME_ALLOW_REMOTE_CONTROL=1``
 deliberately opens it to the rest of the network.
 
 Both the WebSocket and the built frontend in ``web/dist`` are served from a
-*single* port (``GRAPHAGENTS_HTTP_PORT``, default 8080): a request arrives as a
+*single* port (``RHIZOME_HTTP_PORT``, default 8080): a request arrives as a
 WebSocket upgrade or as a plain GET, and one listener answers both. That means a
 remote viewer (SSH or VS Code port forwarding) needs exactly one forwarded port,
 and the page derives its socket URL from the origin it was loaded from -- a
@@ -66,22 +66,22 @@ from websockets.asyncio.server import Server, ServerConnection, broadcast, serve
 from websockets.datastructures import Headers
 from websockets.http11 import Request, Response
 
-from graphagents.file_view import file_view
-from graphagents.normalize import (
+from rhizome_graph.file_view import file_view
+from rhizome_graph.normalize import (
     Event,
     actor_of,
     fs_event,
     normalize_event,
     seed_event,
 )
-from graphagents.paths import complete_dir, resolve_root
-from graphagents.repo import display_root, read_branch
-from graphagents.status import git_status, status_frame
-from graphagents.tree import scan_tree
+from rhizome_graph.paths import complete_dir, resolve_root
+from rhizome_graph.repo import display_root, read_branch
+from rhizome_graph.status import git_status, status_frame
+from rhizome_graph.tree import scan_tree
 
-LOGGER = logging.getLogger("graphagents.daemon")
+LOGGER = logging.getLogger("rhizome_graph.daemon")
 
-DEFAULT_SOCKET_PATH = "/tmp/graph-agents.sock"
+DEFAULT_SOCKET_PATH = "/tmp/rhizome-graph.sock"
 DEFAULT_HTTP_PORT = 8080
 REPLAY_BUFFER_SIZE = 200
 
@@ -109,7 +109,7 @@ REPO_POLL_INTERVAL_SECONDS = 2.0
 #: the branch poll on purpose, and in a task of its own: the branch is a dozen
 #: bytes of `.git/HEAD`, while this forks `git status`, which walks the whole
 #: working tree (there is no file to read that answers it -- see
-#: :mod:`graphagents.status`). Sharing the branch poll's loop would drag the
+#: :mod:`rhizome_graph.status`). Sharing the branch poll's loop would drag the
 #: caption down to the slowest of the two.
 STATUS_POLL_INTERVAL_SECONDS = 3.0
 
@@ -281,7 +281,7 @@ class EventHub:
     def seed_paths(self, paths: Iterable[str]) -> None:
         """Publish the project's existing files as the graph's starting tree.
 
-        Called once at boot with :func:`graphagents.tree.scan_tree`. Without it
+        Called once at boot with :func:`rhizome_graph.tree.scan_tree`. Without it
         the page opens on a blank field and only ever shows the handful of files
         an agent happens to touch.
         """
@@ -442,7 +442,7 @@ def parse_command(raw: str) -> dict | None:
     non-string ``path`` -- collapses to ``None``.
 
     The path is handed on exactly as typed: trimming and ``~`` expansion belong
-    to :mod:`graphagents.paths`, and the answer echoes this text back so the page
+    to :mod:`rhizome_graph.paths`, and the answer echoes this text back so the page
     can tell whether it still matches what the viewer has in the field.
     """
     try:
@@ -664,7 +664,7 @@ async def _send(websocket: ServerConnection, frame: dict) -> None:
 
 
 def _allow_remote_control() -> bool:
-    return os.environ.get("GRAPHAGENTS_ALLOW_REMOTE_CONTROL", "") not in ("", "0")
+    return os.environ.get("RHIZOME_ALLOW_REMOTE_CONTROL", "") not in ("", "0")
 
 
 def _peer_host(websocket: ServerConnection) -> str:
@@ -851,21 +851,21 @@ def _start_watcher(hub: EventHub, project_root: str):
 def _status_poll_interval() -> float:
     """How often to re-read the working tree, from the environment.
 
-    ``GRAPHAGENTS_STATUS_INTERVAL`` is an escape hatch, not a tuning knob: on a
+    ``RHIZOME_STATUS_INTERVAL`` is an escape hatch, not a tuning knob: on a
     huge repository on a slow disk `git status` is expensive enough that somebody
     watching may want it rarer, or off entirely. Zero or negative means off, and
     then no task is created at all -- a loop that only sleeps is still a loop to
     reason about. Garbage falls back to the default rather than crashing the
     daemon at boot over a typo.
     """
-    raw = os.environ.get("GRAPHAGENTS_STATUS_INTERVAL", "").strip()
+    raw = os.environ.get("RHIZOME_STATUS_INTERVAL", "").strip()
     if not raw:
         return STATUS_POLL_INTERVAL_SECONDS
     try:
         return float(raw)
     except ValueError:
         LOGGER.warning(
-            "GRAPHAGENTS_STATUS_INTERVAL=%r is not a number; using %.1fs",
+            "RHIZOME_STATUS_INTERVAL=%r is not a number; using %.1fs",
             raw,
             STATUS_POLL_INTERVAL_SECONDS,
         )
@@ -948,17 +948,17 @@ async def run(
 
 def main() -> None:
     logging.basicConfig(
-        level=os.environ.get("GRAPHAGENTS_LOG_LEVEL", "INFO"),
+        level=os.environ.get("RHIZOME_LOG_LEVEL", "INFO"),
         format="%(asctime)s %(name)s %(levelname)s %(message)s",
     )
-    socket_path = os.environ.get("GRAPHAGENTS_SOCKET", DEFAULT_SOCKET_PATH)
-    http_port = int(os.environ.get("GRAPHAGENTS_HTTP_PORT", DEFAULT_HTTP_PORT))
-    project_root = os.environ.get("GRAPHAGENTS_PROJECT_ROOT", os.getcwd())
+    socket_path = os.environ.get("RHIZOME_SOCKET", DEFAULT_SOCKET_PATH)
+    http_port = int(os.environ.get("RHIZOME_HTTP_PORT", DEFAULT_HTTP_PORT))
+    project_root = os.environ.get("RHIZOME_PROJECT_ROOT", os.getcwd())
 
-    if "GRAPHAGENTS_WS_PORT" in os.environ:
+    if "RHIZOME_WS_PORT" in os.environ:
         LOGGER.warning(
-            "GRAPHAGENTS_WS_PORT is obsolete and ignored: the WebSocket now "
-            "shares the HTTP port (GRAPHAGENTS_HTTP_PORT=%d).",
+            "RHIZOME_WS_PORT is obsolete and ignored: the WebSocket now "
+            "shares the HTTP port (RHIZOME_HTTP_PORT=%d).",
             http_port,
         )
 

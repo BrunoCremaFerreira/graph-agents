@@ -1,4 +1,4 @@
-"""Contract tests (RED) for graphagents.hexdump.
+"""Contract tests (RED) for rhizome_graph.hexdump.
 
 Motivation: clicking a node in the graph is about to open a panel showing what
 that file actually contains. Text is easy; a `.png`, a `.pyc` or a `.so` is not.
@@ -34,7 +34,7 @@ from pathlib import Path
 
 import pytest
 
-from graphagents.hexdump import looks_binary, xxd_dump
+from rhizome_graph.hexdump import looks_binary, xxd_dump
 
 #: Where the ASCII column begins in `xxd`'s default output: 8 offset digits, a
 #: colon, a space, 39 columns of hex (8 groups of 2 bytes, space-separated), then

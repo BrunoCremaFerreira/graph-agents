@@ -5,7 +5,7 @@ you cannot tell *which* checkout you are watching, and a branch switch changes
 the meaning of every node without a single pixel saying so. The daemon therefore
 publishes a small, separate message the HUD renders at the bottom of the screen:
 
-    {"kind": "meta", "root": "~/projects/graph-agents", "branch": "development"}
+    {"kind": "meta", "root": "~/projects/rhizome-graph", "branch": "development"}
 
 Two properties keep it from poisoning the stream:
 
@@ -63,7 +63,7 @@ def test_meta_is_the_first_message_a_new_client_receives():
     hub.seed_paths(["src/app.py"])
     hub.ingest_line(HOOK)
 
-    hub.set_meta("~/projects/graph-agents", "development")
+    hub.set_meta("~/projects/rhizome-graph", "development")
 
     assert _sent(hub)[0]["kind"] == "meta"
 
@@ -71,10 +71,10 @@ def test_meta_is_the_first_message_a_new_client_receives():
 def test_meta_carries_the_display_root_and_the_branch():
     hub = EventHub(project_root=ROOT)
 
-    hub.set_meta("~/projects/graph-agents", "development")
+    hub.set_meta("~/projects/rhizome-graph", "development")
 
     assert _metas(hub) == [
-        {"kind": "meta", "root": "~/projects/graph-agents", "branch": "development"}
+        {"kind": "meta", "root": "~/projects/rhizome-graph", "branch": "development"}
     ]
 
 
@@ -91,10 +91,10 @@ def test_repeated_updates_leave_exactly_one_meta_in_the_replay():
     hub = EventHub(project_root=ROOT)
 
     for branch in ("main", "development", "feature/a", "feature/b", "feature/hud-contexto"):
-        hub.set_meta("~/projects/graph-agents", branch)
+        hub.set_meta("~/projects/rhizome-graph", branch)
 
     assert _metas(hub) == [
-        {"kind": "meta", "root": "~/projects/graph-agents", "branch": "feature/hud-contexto"}
+        {"kind": "meta", "root": "~/projects/rhizome-graph", "branch": "feature/hud-contexto"}
     ]
 
 
@@ -139,11 +139,11 @@ class TestBroadcast:
         async def scenario():
             hub, server, port = await _serve()
             async with server, connect(f"ws://127.0.0.1:{port}/ws") as ws:
-                hub.set_meta("~/projects/graph-agents", "development")
+                hub.set_meta("~/projects/rhizome-graph", "development")
                 message = json.loads(await asyncio.wait_for(ws.recv(), timeout=5))
                 assert message == {
                     "kind": "meta",
-                    "root": "~/projects/graph-agents",
+                    "root": "~/projects/rhizome-graph",
                     "branch": "development",
                 }
 

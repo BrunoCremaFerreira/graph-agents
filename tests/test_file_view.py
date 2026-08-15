@@ -1,4 +1,4 @@
-"""Contract tests (RED) for graphagents.file_view.
+"""Contract tests (RED) for rhizome_graph.file_view.
 
 Motivation: the graph shows *that* a file changed and nothing about *what* is in
 it. Clicking a node opens a panel, and this module builds what that panel shows --
@@ -43,7 +43,7 @@ from pathlib import Path
 
 import pytest
 
-from graphagents.file_view import file_view, resolve_inside
+from rhizome_graph.file_view import file_view, resolve_inside
 
 PNG_MAGIC = b"\x89PNG\r\n\x1a\n\x00\x00\x00\rIHDR"
 

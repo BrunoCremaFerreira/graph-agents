@@ -35,7 +35,7 @@ import pytest
 REPO_ROOT = Path(__file__).resolve().parent.parent
 
 #: Directories whose every source file is checked, recursively.
-SCANNED_DIRS = ("graphagents", "daemon", "hooks", "web/src", "config", ".claude/agents")
+SCANNED_DIRS = ("rhizome_graph", "daemon", "hooks", "web/src", "config", ".claude/agents")
 
 #: Individually scanned files that sit at the repository root.
 SCANNED_FILES = ("start.sh", "run.sh", "CLAUDE.md", "README.md")
@@ -126,6 +126,12 @@ def test_the_policy_actually_reads_something() -> None:
     assert len(files) > 30, f"expected the whole source tree, got {files}"
     assert any(f.name == "start.sh" for f in files)
     assert any(f.suffix == ".ts" for f in files)
+    # A name in SCANNED_DIRS that no longer exists on disk is skipped in
+    # silence -- which is exactly how a rename of the Python package turns this
+    # whole policy into a green test that reads none of it.
+    assert any(
+        "rhizome_graph" in path.parts for path in files
+    ), "the Python package is not being scanned; SCANNED_DIRS names a directory that is gone"
 
 
 def test_no_portuguese_in_authored_sources() -> None:
@@ -139,7 +145,7 @@ def test_no_portuguese_in_authored_sources() -> None:
     "line",
     [
         "  const base = total === 1 ? '1 alteração' : `${total} alterações`;",
-        "# start.sh — bootstrap + run do projeto graph-agents",
+        "# start.sh — bootstrap + run do projeto rhizome-graph",
         "  err 'Não foi possível obter um npm'",
         "# roda com cwd em web/",
     ],

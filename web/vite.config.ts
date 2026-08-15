@@ -22,7 +22,7 @@ export default defineConfig({
     host: true,
     proxy: {
       "/ws": {
-        target: process.env.GRAPHAGENTS_ORIGIN ?? "http://localhost:8080",
+        target: process.env.RHIZOME_ORIGIN ?? "http://localhost:8080",
         ws: true,
       },
     },

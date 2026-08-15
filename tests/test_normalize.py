@@ -1,4 +1,4 @@
-"""Contract tests (RED) for graphagents.normalize.normalize_event.
+"""Contract tests (RED) for rhizome_graph.normalize.normalize_event.
 
 These specify the pure normalization function that maps one Claude Code hook
 payload to a broadcastable Event. They are expected to FAIL until
@@ -12,7 +12,7 @@ import time
 
 import pytest
 
-from graphagents.normalize import Event, normalize_event
+from rhizome_graph.normalize import Event, normalize_event
 
 # Colors fixed by the shared contract (hex, no leading '#').
 COLOR_A = "33FF33"

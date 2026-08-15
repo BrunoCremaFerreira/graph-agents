@@ -61,10 +61,10 @@ import { parseDiff } from "../src/diffModel";
 
 /** A whole `git diff` of one file: preamble, one hunk, every marker. */
 const DIFF = [
-  "diff --git a/graphagents/normalize.py b/graphagents/normalize.py",
+  "diff --git a/rhizome_graph/normalize.py b/rhizome_graph/normalize.py",
   "index 1a2b3c4..5d6e7f8 100644",
-  "--- a/graphagents/normalize.py",
-  "+++ b/graphagents/normalize.py",
+  "--- a/rhizome_graph/normalize.py",
+  "+++ b/rhizome_graph/normalize.py",
   "@@ -10,3 +12,4 @@ def actor_of(payload):",
   " keep = 1",
   "-drop = 2",

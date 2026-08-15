@@ -2,7 +2,7 @@
  * Contract tests (RED) for the observed-root prompt's key bindings.
  *
  * The defect: the root is frozen at daemon boot. Watching a second project
- * means killing the daemon, exporting GRAPHAGENTS_PROJECT_ROOT again and
+ * means killing the daemon, exporting RHIZOME_PROJECT_ROOT again and
  * reloading the page -- so the visualiser is unusable for anyone who works in
  * more than one checkout. The page is getting a prompt (ctrl+L) that asks the
  * daemon to switch roots, and the mapping from a key press to a command is the

@@ -33,6 +33,7 @@ import { EffectComposer } from "three/examples/jsm/postprocessing/EffectComposer
 import { RenderPass } from "three/examples/jsm/postprocessing/RenderPass.js";
 import { UnrealBloomPass } from "three/examples/jsm/postprocessing/UnrealBloomPass.js";
 import { OutputPass } from "three/examples/jsm/postprocessing/OutputPass.js";
+import { APP_NAME } from "./branding";
 import type { AgentEvent } from "./protocol";
 import type { SimNode, Simulation } from "./simulation";
 import { ForceLayout } from "./layout";
@@ -764,7 +765,7 @@ export class GourceRenderer {
     const message = error instanceof Error ? error.message : String(error);
     if (this.reportedFrameErrors.has(message)) return;
     this.reportedFrameErrors.add(message);
-    console.error("graph-agents: frame failed:", error);
+    console.error(`${APP_NAME}: frame failed:`, error);
   }
 
   private frame(dt: number): void {

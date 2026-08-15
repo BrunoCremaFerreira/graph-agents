@@ -63,7 +63,7 @@ import {
 import type { FileViewMode } from "../src/protocol";
 
 /** A Python file, so a known grammar is in play unless a test says otherwise. */
-const PY = "graphagents/normalize.py";
+const PY = "rhizome_graph/normalize.py";
 
 /** A panel waiting for the daemon's answer. */
 function pending(path = PY): FileViewState {

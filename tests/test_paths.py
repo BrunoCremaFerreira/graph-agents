@@ -1,7 +1,7 @@
-"""Contract tests (RED) for graphagents.paths.
+"""Contract tests (RED) for rhizome_graph.paths.
 
 Motivation: the observed root is decided once, at boot, by
-``GRAPHAGENTS_PROJECT_ROOT``. Watching a second project means killing the daemon,
+``RHIZOME_PROJECT_ROOT``. Watching a second project means killing the daemon,
 exporting a different variable and starting over -- and losing the graph you were
 already looking at. The new feature lets the viewer retype the root in the page
 (``ctrl+L``, ``Tab`` to complete, ``Enter`` to apply); this module is the piece
@@ -36,7 +36,7 @@ from pathlib import Path
 
 import pytest
 
-from graphagents.paths import Completion, complete_dir, resolve_root
+from rhizome_graph.paths import Completion, complete_dir, resolve_root
 
 
 def _dirs(root: Path, *names: str) -> None:

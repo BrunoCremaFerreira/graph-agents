@@ -28,7 +28,7 @@ without a socket:
     directory, so it is not something an open port should hand to anyone. The
     policy is loopback-only by default (an SSH tunnel and VS Code port forwarding
     both arrive as loopback, so the ordinary remote setup keeps working), with
-    ``GRAPHAGENTS_ALLOW_REMOTE_CONTROL=1`` deliberately opening it up.
+    ``RHIZOME_ALLOW_REMOTE_CONTROL=1`` deliberately opening it up.
   * ``completion_response`` -- the frame sent back. It echoes the path that was
     asked about, **intact**: the viewer keeps typing while the answer travels, so
     the page compares the echo against the field to drop answers that arrived too
@@ -321,7 +321,7 @@ def test_a_remote_peer_may_not_read_files_through_the_file_command(
     # `file` is understood, and still refused off-loopback: it reads contents, so
     # it is at least as privileged as `setRoot`. Both halves are asserted because
     # a `file` nobody parses would satisfy the refusal for the wrong reason.
-    monkeypatch.delenv("GRAPHAGENTS_ALLOW_REMOTE_CONTROL", raising=False)
+    monkeypatch.delenv("RHIZOME_ALLOW_REMOTE_CONTROL", raising=False)
     (tmp_path / "a.txt").write_text("top secret\n", encoding="utf-8")
     session = Session(str(tmp_path), str(tmp_path))
     frame = '{"kind":"file","path":"a.txt"}'
@@ -337,7 +337,7 @@ def test_a_remote_peer_may_not_read_files_through_the_file_command(
 def test_a_loopback_peer_is_served_the_file_it_asked_for(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ):
-    monkeypatch.delenv("GRAPHAGENTS_ALLOW_REMOTE_CONTROL", raising=False)
+    monkeypatch.delenv("RHIZOME_ALLOW_REMOTE_CONTROL", raising=False)
     (tmp_path / "a.txt").write_text("hello\n", encoding="utf-8")
     session = Session(str(tmp_path), str(tmp_path))
     client = _FakeClient('{"kind":"file","path":"a.txt"}', host="127.0.0.1")

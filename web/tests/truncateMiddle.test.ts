@@ -17,7 +17,7 @@
 import { describe, it, expect } from "vitest";
 import { truncateMiddle } from "../src/protocol";
 
-const LONG = "/home/brn/projects/very/deep/nested/graph-agents"; // 47 chars
+const LONG = "/home/brn/projects/very/deep/nested/rhizome-graph"; // 48 chars
 
 /** Either elision marker is acceptable; the position is what is specified. */
 const ELISION = /(…|\.\.\.)/;
@@ -38,7 +38,7 @@ describe("truncateMiddle", () => {
   });
 
   it("keeps the tail, which is the part that names the project", () => {
-    expect(truncateMiddle(LONG, 30).endsWith("graph-agents")).toBe(true);
+    expect(truncateMiddle(LONG, 30).endsWith("rhizome-graph")).toBe(true);
   });
 
   it("keeps the head, which is the part that gives context", () => {

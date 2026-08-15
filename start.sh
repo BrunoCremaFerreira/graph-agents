@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 #
-# start.sh — bootstrap + run graph-agents (the Gource-style web visualizer).
+# start.sh — bootstrap + run rhizome-graph (the Gource-style web visualizer).
 #
 # Does everything from scratch:
 #   1. creates/prepares the Python venv and installs the daemon deps;
@@ -39,11 +39,11 @@
 #     force the reinstall there too.
 #
 # Environment variables (with defaults):
-#   GRAPHAGENTS_SOCKET     /tmp/graph-agents.sock   Unix ingest socket for the hooks
-#   GRAPHAGENTS_HTTP_PORT  8080                     single port: serves web/dist AND the
+#   RHIZOME_SOCKET         /tmp/rhizome-graph.sock  Unix ingest socket for the hooks
+#   RHIZOME_HTTP_PORT      8080                     single port: serves web/dist AND the
 #                                                   WebSocket at /ws (one forwarded port
 #                                                   is enough over SSH)
-#   GRAPHAGENTS_PROJECT_ROOT  (cwd)                 root the graph's paths are relative to
+#   RHIZOME_PROJECT_ROOT   (cwd)                    root the graph's paths are relative to
 #   PYTHON  NODE  NPM      executable overrides
 #
 set -euo pipefail
@@ -249,15 +249,15 @@ else # auto
 fi
 
 # ---- 3. daemon env ---------------------------------------------------------
-export GRAPHAGENTS_SOCKET="${GRAPHAGENTS_SOCKET:-/tmp/graph-agents.sock}"
-export GRAPHAGENTS_HTTP_PORT="${GRAPHAGENTS_HTTP_PORT:-8080}"
-export GRAPHAGENTS_PROJECT_ROOT="${GRAPHAGENTS_PROJECT_ROOT:-$PWD}"
+export RHIZOME_SOCKET="${RHIZOME_SOCKET:-/tmp/rhizome-graph.sock}"
+export RHIZOME_HTTP_PORT="${RHIZOME_HTTP_PORT:-8080}"
+export RHIZOME_PROJECT_ROOT="${RHIZOME_PROJECT_ROOT:-$PWD}"
 
 echo
-log "graph-agents"
-echo "  ingest socket : $GRAPHAGENTS_SOCKET"
-echo "  page + socket : http://localhost:$GRAPHAGENTS_HTTP_PORT (ws at /ws)"
-echo "  project root  : $GRAPHAGENTS_PROJECT_ROOT"
+log "rhizome-graph"
+echo "  ingest socket : $RHIZOME_SOCKET"
+echo "  page + socket : http://localhost:$RHIZOME_HTTP_PORT (ws at /ws)"
+echo "  project root  : $RHIZOME_PROJECT_ROOT"
 echo "  hooks         : copy the \"hooks\" block from config/settings.json into the"
 echo "                  .claude/settings.json of the project you want to observe."
 echo
@@ -271,7 +271,7 @@ if [[ "$MODE" == "dev" ]]; then
   trap 'kill "$DAEMON_PID" 2>/dev/null || true' EXIT INT TERM
   ( cd "$REPO_ROOT/web" && exec "$NPM" run dev )
 else
-  echo "  http (front)  : http://localhost:$GRAPHAGENTS_HTTP_PORT"
+  echo "  http (front)  : http://localhost:$RHIZOME_HTTP_PORT"
   echo
   log "Starting the daemon (Ctrl-C to stop)"
   exec "$PYTHON" -m daemon.server

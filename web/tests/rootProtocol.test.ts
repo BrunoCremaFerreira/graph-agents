@@ -65,7 +65,7 @@ function validRootError(): Record<string, unknown> {
 
 /** The HUD frame that already shares this socket. */
 function validMeta(): Record<string, unknown> {
-  return { kind: "meta", root: "~/projects/graph-agents", branch: "development" };
+  return { kind: "meta", root: "~/projects/rhizome-graph", branch: "development" };
 }
 
 /** A well-formed activity event, for the cross-parser tests. */

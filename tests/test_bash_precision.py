@@ -19,7 +19,7 @@ from __future__ import annotations
 
 import pytest
 
-from graphagents.normalize import normalize_event
+from rhizome_graph.normalize import normalize_event
 
 ROOT = "/proj"
 

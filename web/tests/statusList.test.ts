@@ -120,13 +120,13 @@ describe("status list: order", () => {
       status([
         entry("web/src/renderer.ts", "modified"),
         entry("daemon/server.py", "modified"),
-        entry("graphagents/tree.py", "modified"),
+        entry("rhizome_graph/tree.py", "modified"),
       ]),
     );
 
     expect(model.rows.map((row) => row.path)).toEqual([
       "daemon/server.py",
-      "graphagents/tree.py",
+      "rhizome_graph/tree.py",
       "web/src/renderer.ts",
     ]);
   });

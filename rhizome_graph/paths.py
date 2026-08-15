@@ -1,7 +1,7 @@
 """Turning a directory typed in the page into a root the daemon can observe.
 
 The observed root used to be settled once, at boot, by
-``GRAPHAGENTS_PROJECT_ROOT``: watching a second project meant killing the daemon
+``RHIZOME_PROJECT_ROOT``: watching a second project meant killing the daemon
 and starting over. The page now lets the viewer retype it (``ctrl+L`` opens the
 field, ``Tab`` completes, ``Enter`` applies), and this module is the piece
 underneath: it decides whether what was typed is a directory, and it answers the
@@ -15,7 +15,7 @@ Two rules shape everything below.
     revoked, ``//``. An exception here would kill the task serving every
     connected browser, so every failure collapses to ``None`` (refused) or to an
     empty candidate list (nothing to complete) -- both of which the page can
-    show. The same house rule as :mod:`graphagents.repo`.
+    show. The same house rule as :mod:`rhizome_graph.repo`.
   * **``home`` is a parameter**, never ``os.path.expanduser``. The daemon may
     want to expand ``~`` against something other than its own process
     environment, and passing it in is what makes this module testable without a

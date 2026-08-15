@@ -38,7 +38,7 @@ would be read into the daemon's memory, hex-expanded to four times its size and
 pushed to a browser. The cap applies to the bytes *read*, in both modes.
 
 The read itself goes to a thread. Blocking the loop freezes every connected
-viewer, for the same reason :func:`graphagents.tree.scan_tree` is off it. Nothing
+viewer, for the same reason :func:`rhizome_graph.tree.scan_tree` is off it. Nothing
 here raises.
 """
 
@@ -47,8 +47,8 @@ from __future__ import annotations
 import asyncio
 import os
 
-from graphagents.diff import git_diff
-from graphagents.hexdump import looks_binary, xxd_dump
+from rhizome_graph.diff import git_diff
+from rhizome_graph.hexdump import looks_binary, xxd_dump
 
 #: Ceiling on the bytes read for one panel.
 DEFAULT_MAX_BYTES = 256 * 1024

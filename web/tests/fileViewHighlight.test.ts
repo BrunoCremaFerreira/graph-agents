@@ -51,7 +51,7 @@ import {
 } from "../src/fileView";
 
 /** The file the user clicked. */
-const PATH = "graphagents/normalize.py";
+const PATH = "rhizome_graph/normalize.py";
 
 /** A different file, for the "clicked another one while it tokenized" race. */
 const OTHER = "web/src/renderer.ts";

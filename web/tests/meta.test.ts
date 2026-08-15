@@ -26,7 +26,7 @@ import { parseMeta, type DaemonMeta } from "../src/protocol";
 function validMeta(): Record<string, unknown> {
   return {
     kind: "meta",
-    root: "~/projects/graph-agents",
+    root: "~/projects/rhizome-graph",
     branch: "development",
   };
 }
@@ -57,7 +57,7 @@ describe("parseMeta", () => {
 
     expect(parsed).not.toBeNull();
     const meta = parsed as DaemonMeta;
-    expect(meta.root).toBe("~/projects/graph-agents");
+    expect(meta.root).toBe("~/projects/rhizome-graph");
     expect(meta.branch).toBe("development");
   });
 
@@ -68,7 +68,7 @@ describe("parseMeta", () => {
     const parsed = parseMeta(raw);
 
     expect(parsed).not.toBeNull();
-    expect((parsed as DaemonMeta).root).toBe("~/projects/graph-agents");
+    expect((parsed as DaemonMeta).root).toBe("~/projects/rhizome-graph");
     expect((parsed as DaemonMeta).branch).toBeNull();
   });
 
@@ -79,7 +79,7 @@ describe("parseMeta", () => {
     const parsed = parseMeta(raw);
 
     expect(parsed).not.toBeNull();
-    expect((parsed as DaemonMeta).root).toBe("~/projects/graph-agents");
+    expect((parsed as DaemonMeta).root).toBe("~/projects/rhizome-graph");
     expect((parsed as DaemonMeta).branch).toBeNull();
   });
 

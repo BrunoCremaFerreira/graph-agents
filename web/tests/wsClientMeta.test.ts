@@ -68,7 +68,7 @@ function connect(
 
 const META_FRAME = JSON.stringify({
   kind: "meta",
-  root: "~/projects/graph-agents",
+  root: "~/projects/rhizome-graph",
   branch: "development",
 });
 
@@ -94,7 +94,7 @@ describe("WebSocket client frame routing", () => {
 
     expect(onMeta).toHaveBeenCalledTimes(1);
     expect(onMeta).toHaveBeenCalledWith({
-      root: "~/projects/graph-agents",
+      root: "~/projects/rhizome-graph",
       branch: "development",
     });
   });

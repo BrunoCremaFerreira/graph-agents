@@ -1,4 +1,4 @@
-"""Contract tests (RED) for graphagents.tree.
+"""Contract tests (RED) for rhizome_graph.tree.
 
 `scan_tree` is what lets the graph start as a *tree* instead of a blank field:
 the daemon walks the observed project once at boot and seeds every existing file
@@ -14,7 +14,7 @@ from __future__ import annotations
 import os
 from pathlib import Path
 
-from graphagents.tree import is_ignored, scan_tree
+from rhizome_graph.tree import is_ignored, scan_tree
 
 
 def _touch(root: Path, rel: str) -> None:
@@ -69,10 +69,10 @@ def test_skips_vcs_and_build_directories(tmp_path: Path):
 
 
 def test_skips_packaging_metadata_directories(tmp_path: Path):
-    _touch(tmp_path, "graphagents/__init__.py")
-    _touch(tmp_path, "graphagents.egg-info/PKG-INFO")
+    _touch(tmp_path, "rhizome_graph/__init__.py")
+    _touch(tmp_path, "rhizome_graph.egg-info/PKG-INFO")
 
-    assert scan_tree(str(tmp_path)) == ["graphagents/__init__.py"]
+    assert scan_tree(str(tmp_path)) == ["rhizome_graph/__init__.py"]
 
 
 def test_is_ignored_matches_any_segment_of_the_path():

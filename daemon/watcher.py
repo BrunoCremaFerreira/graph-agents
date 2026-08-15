@@ -26,9 +26,9 @@ from typing import Callable
 from watchdog.events import FileSystemEvent, FileSystemEventHandler
 from watchdog.observers import Observer
 
-from graphagents.tree import is_ignored
+from rhizome_graph.tree import is_ignored
 
-LOGGER = logging.getLogger("graphagents.watcher")
+LOGGER = logging.getLogger("rhizome_graph.watcher")
 
 #: (relative_path, op_type) -> None
 ChangeSink = Callable[[str, str], None]
@@ -56,7 +56,7 @@ def relative_to_root(path: str, root: str) -> str | None:
     """Return `path` relative to `root`, or ``None`` if it must not be shown.
 
     Rejects anything outside the root, the root itself, and paths inside the
-    build/VCS directories that :mod:`graphagents.tree` already filters out of the
+    build/VCS directories that :mod:`rhizome_graph.tree` already filters out of the
     initial snapshot -- otherwise a single ``npm install`` would bury the graph.
     """
     normalized = os.path.normpath(path)

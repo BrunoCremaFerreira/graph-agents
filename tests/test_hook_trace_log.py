@@ -9,9 +9,9 @@ a question nobody can answer, because the hook forwards the payload and forgets
 it. `normalize.py` only looks at the handful of fields it knows, so any
 `subagent_id`-shaped field would be dropped without a trace.
 
-`GRAPHAGENTS_TRACE_LOG` is the instrument: when it names a file, the hook
+`RHIZOME_TRACE_LOG` is the instrument: when it names a file, the hook
 appends the payload **exactly as it arrived on stdin**, before any parsing. It
-is the sibling of `GRAPHAGENTS_DEBUG_LOG` (which records *failures*); this one
+is the sibling of `RHIZOME_DEBUG_LOG` (which records *failures*); this one
 records *arrivals*.
 
 Format pinned here: one entry per invocation, one line, the raw stdin text
@@ -95,7 +95,7 @@ def test_nothing_is_written_when_the_trace_variable_is_unset(tmp_path: Path):
     trace = tmp_path / "trace.jsonl"
 
     _run_hook(
-        json.dumps(PAYLOAD), {"GRAPHAGENTS_SOCKET": str(tmp_path / "absent.sock")}
+        json.dumps(PAYLOAD), {"RHIZOME_SOCKET": str(tmp_path / "absent.sock")}
     )
 
     assert not trace.exists()
@@ -106,8 +106,8 @@ def test_an_empty_trace_variable_is_treated_as_unset(tmp_path: Path):
     _run_hook(
         json.dumps(PAYLOAD),
         {
-            "GRAPHAGENTS_SOCKET": str(tmp_path / "absent.sock"),
-            "GRAPHAGENTS_TRACE_LOG": "",
+            "RHIZOME_SOCKET": str(tmp_path / "absent.sock"),
+            "RHIZOME_TRACE_LOG": "",
         },
     )
 
@@ -121,8 +121,8 @@ def test_the_raw_payload_is_appended_as_one_recoverable_line(tmp_path: Path):
         _run_hook(
             json.dumps(PAYLOAD),
             {
-                "GRAPHAGENTS_SOCKET": str(tmp_path / "d.sock"),
-                "GRAPHAGENTS_TRACE_LOG": str(trace),
+                "RHIZOME_SOCKET": str(tmp_path / "d.sock"),
+                "RHIZOME_TRACE_LOG": str(trace),
             },
         )
 
@@ -136,8 +136,8 @@ def test_a_second_invocation_appends_instead_of_overwriting(tmp_path: Path):
     first = {**PAYLOAD, "session_id": "sess-first"}
     second = {**PAYLOAD, "session_id": "sess-second"}
     env = {
-        "GRAPHAGENTS_SOCKET": str(tmp_path / "absent.sock"),
-        "GRAPHAGENTS_TRACE_LOG": str(trace),
+        "RHIZOME_SOCKET": str(tmp_path / "absent.sock"),
+        "RHIZOME_TRACE_LOG": str(trace),
     }
 
     _run_hook(json.dumps(first), env)
@@ -158,8 +158,8 @@ def test_a_field_normalize_ignores_survives_into_the_trace(tmp_path: Path):
     _run_hook(
         json.dumps(payload),
         {
-            "GRAPHAGENTS_SOCKET": str(tmp_path / "absent.sock"),
-            "GRAPHAGENTS_TRACE_LOG": str(trace),
+            "RHIZOME_SOCKET": str(tmp_path / "absent.sock"),
+            "RHIZOME_TRACE_LOG": str(trace),
         },
     )
 
@@ -176,8 +176,8 @@ def test_the_payload_is_traced_even_when_the_daemon_is_unreachable(tmp_path: Pat
     result = _run_hook(
         json.dumps(PAYLOAD),
         {
-            "GRAPHAGENTS_SOCKET": str(tmp_path / "absent.sock"),
-            "GRAPHAGENTS_TRACE_LOG": str(trace),
+            "RHIZOME_SOCKET": str(tmp_path / "absent.sock"),
+            "RHIZOME_TRACE_LOG": str(trace),
         },
     )
 
@@ -193,8 +193,8 @@ def test_malformed_stdin_is_traced_verbatim_and_the_hook_stays_silent(tmp_path: 
     result = _run_hook(
         "this is not json at all",
         {
-            "GRAPHAGENTS_SOCKET": str(tmp_path / "absent.sock"),
-            "GRAPHAGENTS_TRACE_LOG": str(trace),
+            "RHIZOME_SOCKET": str(tmp_path / "absent.sock"),
+            "RHIZOME_TRACE_LOG": str(trace),
         },
     )
 
@@ -210,8 +210,8 @@ def test_tracing_does_not_stop_the_payload_from_reaching_the_daemon(tmp_path: Pa
         _run_hook(
             json.dumps(PAYLOAD),
             {
-                "GRAPHAGENTS_SOCKET": str(tmp_path / "d.sock"),
-                "GRAPHAGENTS_TRACE_LOG": str(trace),
+                "RHIZOME_SOCKET": str(tmp_path / "d.sock"),
+                "RHIZOME_TRACE_LOG": str(trace),
             },
         )
 
@@ -225,9 +225,9 @@ def test_tracing_does_not_disable_the_debug_log(tmp_path: Path):
     _run_hook(
         json.dumps(PAYLOAD),
         {
-            "GRAPHAGENTS_SOCKET": str(tmp_path / "absent.sock"),
-            "GRAPHAGENTS_DEBUG_LOG": str(debug),
-            "GRAPHAGENTS_TRACE_LOG": str(trace),
+            "RHIZOME_SOCKET": str(tmp_path / "absent.sock"),
+            "RHIZOME_DEBUG_LOG": str(debug),
+            "RHIZOME_TRACE_LOG": str(trace),
         },
     )
 
@@ -239,8 +239,8 @@ def test_an_unwritable_trace_path_does_not_break_the_hook(tmp_path: Path):
     result = _run_hook(
         json.dumps(PAYLOAD),
         {
-            "GRAPHAGENTS_SOCKET": str(tmp_path / "absent.sock"),
-            "GRAPHAGENTS_TRACE_LOG": str(tmp_path / "no" / "such" / "dir.jsonl"),
+            "RHIZOME_SOCKET": str(tmp_path / "absent.sock"),
+            "RHIZOME_TRACE_LOG": str(tmp_path / "no" / "such" / "dir.jsonl"),
         },
     )
 
@@ -255,8 +255,8 @@ def test_a_directory_as_trace_path_does_not_break_the_hook(tmp_path: Path):
     result = _run_hook(
         json.dumps(PAYLOAD),
         {
-            "GRAPHAGENTS_SOCKET": str(tmp_path / "absent.sock"),
-            "GRAPHAGENTS_TRACE_LOG": str(target),
+            "RHIZOME_SOCKET": str(tmp_path / "absent.sock"),
+            "RHIZOME_TRACE_LOG": str(target),
         },
     )
 

@@ -323,7 +323,7 @@ class Sandbox:
             "HOME": str(self.home),
             "LC_ALL": "C",
             "PYTHON": str(self.python),
-            "GRAPHAGENTS_PROJECT_ROOT": str(self.root),
+            "RHIZOME_PROJECT_ROOT": str(self.root),
         }
         env.update(extra)
         return env

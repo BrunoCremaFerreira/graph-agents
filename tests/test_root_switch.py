@@ -1,9 +1,9 @@
 """Contract tests (RED) for switching the observed project at runtime.
 
 Motivation: `run()` ties the hub, the watcher, the seed scan and the branch poll
-to one local variable settled at boot from ``GRAPHAGENTS_PROJECT_ROOT``. Watching
+to one local variable settled at boot from ``RHIZOME_PROJECT_ROOT``. Watching
 a second project therefore means killing the daemon and starting over. The pieces
-underneath already exist (`graphagents.paths.resolve_root`, `EventHub.reset`);
+underneath already exist (`rhizome_graph.paths.resolve_root`, `EventHub.reset`);
 what is missing is the small object that owns them together -- `Session` -- and
 performs the switch as one ordered operation:
 

@@ -1,10 +1,10 @@
 #!/usr/bin/env bash
 #
-# Start the graph-agents aggregator daemon.
+# Start the rhizome-graph aggregator daemon.
 #
 # The daemon exposes:
-#   * a Unix socket ingest   (GRAPHAGENTS_SOCKET,     default /tmp/graph-agents.sock)
-#   * ONE TCP port           (GRAPHAGENTS_HTTP_PORT,  default 8080) answering both
+#   * a Unix socket ingest   (RHIZOME_SOCKET,     default /tmp/rhizome-graph.sock)
+#   * ONE TCP port           (RHIZOME_HTTP_PORT,  default 8080) answering both
 #     the static web/dist pages and the WebSocket upgrade at /ws. Sharing a port
 #     means a remote setup (SSH / VS Code) only needs that single port forwarded.
 #     When web/dist is missing, run the Vite dev server yourself:
@@ -26,14 +26,14 @@ if [[ ! -x "$PYTHON" ]]; then
   exit 1
 fi
 
-export GRAPHAGENTS_SOCKET="${GRAPHAGENTS_SOCKET:-/tmp/graph-agents.sock}"
-export GRAPHAGENTS_HTTP_PORT="${GRAPHAGENTS_HTTP_PORT:-8080}"
+export RHIZOME_SOCKET="${RHIZOME_SOCKET:-/tmp/rhizome-graph.sock}"
+export RHIZOME_HTTP_PORT="${RHIZOME_HTTP_PORT:-8080}"
 # The project whose paths become relative in the graph (defaults to CWD).
-export GRAPHAGENTS_PROJECT_ROOT="${GRAPHAGENTS_PROJECT_ROOT:-$PWD}"
+export RHIZOME_PROJECT_ROOT="${RHIZOME_PROJECT_ROOT:-$PWD}"
 
-echo "graph-agents daemon"
-echo "  ingest socket : $GRAPHAGENTS_SOCKET"
-echo "  page + socket : http://localhost:$GRAPHAGENTS_HTTP_PORT (ws at /ws)"
-echo "  project root  : $GRAPHAGENTS_PROJECT_ROOT"
+echo "rhizome-graph daemon"
+echo "  ingest socket : $RHIZOME_SOCKET"
+echo "  page + socket : http://localhost:$RHIZOME_HTTP_PORT (ws at /ws)"
+echo "  project root  : $RHIZOME_PROJECT_ROOT"
 
 exec "$PYTHON" -m daemon.server

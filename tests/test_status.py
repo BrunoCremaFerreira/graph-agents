@@ -1,4 +1,4 @@
-"""Contract tests (RED) for graphagents.status.
+"""Contract tests (RED) for rhizome_graph.status.
 
 Motivation: the HUD says which project is on screen and which branch it is on,
 and nothing else. "Is anything uncommitted right now, and what?" -- the single
@@ -9,7 +9,7 @@ a dirty working directory. This module is the model behind a git-status panel:
 the pending changes, as data, ready to be pushed down the WebSocket.
 
 Split so that everything except one function is pure, for the same reason
-`graphagents.diff` is split that way:
+`rhizome_graph.diff` is split that way:
 
   * ``status_command()`` -- the argv, pinned. Two flags are load-bearing and both
     are invisible in a screenshot: ``-z`` (NUL-separated records) because the
@@ -57,7 +57,7 @@ from pathlib import Path
 
 import pytest
 
-from graphagents.status import (
+from rhizome_graph.status import (
     DEFAULT_MAX_ENTRIES,
     DEFAULT_TIMEOUT_SECONDS,
     STATES,

@@ -1,4 +1,4 @@
-"""Contract tests (RED) for graphagents.diff.
+"""Contract tests (RED) for rhizome_graph.diff.
 
 Motivation: the file panel opened by clicking a node should show *what changed*,
 not just what is there. Inside a checkout, the interesting thing about a file an
@@ -50,7 +50,7 @@ from pathlib import Path
 
 import pytest
 
-from graphagents.diff import diff_command, git_diff, parse_diff_output
+from rhizome_graph.diff import diff_command, git_diff, parse_diff_output
 
 
 def _run(coro):

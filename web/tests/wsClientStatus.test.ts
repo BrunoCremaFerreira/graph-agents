@@ -86,7 +86,7 @@ const EVENT_FRAME = JSON.stringify({
 
 const META_FRAME = JSON.stringify({
   kind: "meta",
-  root: "~/projects/graph-agents",
+  root: "~/projects/rhizome-graph",
   branch: "development",
 });
 

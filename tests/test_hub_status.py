@@ -477,7 +477,7 @@ def test_the_status_is_polled_every_three_seconds():
     assert getattr(server, "STATUS_POLL_INTERVAL_SECONDS", None) == 3.0
 
 
-# --- 5. GRAPHAGENTS_STATUS_INTERVAL: the escape hatch -----------------------
+# --- 5. RHIZOME_STATUS_INTERVAL: the escape hatch -----------------------
 #
 # Motivation: on a large repository on a slow disk, forking `git status` every
 # three seconds is the most expensive thing the daemon does, and somebody
@@ -489,7 +489,7 @@ def test_the_status_is_polled_every_three_seconds():
 def test_without_the_variable_the_poll_runs_at_the_default_interval(
     monkeypatch: pytest.MonkeyPatch,
 ):
-    monkeypatch.delenv("GRAPHAGENTS_STATUS_INTERVAL", raising=False)
+    monkeypatch.delenv("RHIZOME_STATUS_INTERVAL", raising=False)
 
     assert server._status_poll_interval() == server.STATUS_POLL_INTERVAL_SECONDS
 
@@ -497,7 +497,7 @@ def test_without_the_variable_the_poll_runs_at_the_default_interval(
 def test_a_number_in_the_variable_becomes_the_interval(
     monkeypatch: pytest.MonkeyPatch,
 ):
-    monkeypatch.setenv("GRAPHAGENTS_STATUS_INTERVAL", "12.5")
+    monkeypatch.setenv("RHIZOME_STATUS_INTERVAL", "12.5")
 
     assert server._status_poll_interval() == 12.5
 
@@ -505,7 +505,7 @@ def test_a_number_in_the_variable_becomes_the_interval(
 def test_zero_turns_the_poll_off(monkeypatch: pytest.MonkeyPatch):
     # "Off" is expressed as a non-positive interval, which `run` then refuses to
     # create a task for: a loop that only sleeps is still a loop to reason about.
-    monkeypatch.setenv("GRAPHAGENTS_STATUS_INTERVAL", "0")
+    monkeypatch.setenv("RHIZOME_STATUS_INTERVAL", "0")
 
     assert server._status_poll_interval() <= 0
 
@@ -514,21 +514,21 @@ def test_a_negative_interval_turns_the_poll_off_too(
     monkeypatch: pytest.MonkeyPatch,
 ):
     # Not clamped up to the default: a negative value is somebody disabling it.
-    monkeypatch.setenv("GRAPHAGENTS_STATUS_INTERVAL", "-1")
+    monkeypatch.setenv("RHIZOME_STATUS_INTERVAL", "-1")
 
     assert server._status_poll_interval() <= 0
 
 
 def test_an_empty_variable_reads_as_unset(monkeypatch: pytest.MonkeyPatch):
-    # `export GRAPHAGENTS_STATUS_INTERVAL=` in a wrapper script is the common way
+    # `export RHIZOME_STATUS_INTERVAL=` in a wrapper script is the common way
     # to get an empty one, and it means "I did not choose", not "off".
-    monkeypatch.setenv("GRAPHAGENTS_STATUS_INTERVAL", "")
+    monkeypatch.setenv("RHIZOME_STATUS_INTERVAL", "")
 
     assert server._status_poll_interval() == server.STATUS_POLL_INTERVAL_SECONDS
 
 
 def test_a_blank_variable_reads_as_unset(monkeypatch: pytest.MonkeyPatch):
-    monkeypatch.setenv("GRAPHAGENTS_STATUS_INTERVAL", "   ")
+    monkeypatch.setenv("RHIZOME_STATUS_INTERVAL", "   ")
 
     assert server._status_poll_interval() == server.STATUS_POLL_INTERVAL_SECONDS
 
@@ -536,7 +536,7 @@ def test_a_blank_variable_reads_as_unset(monkeypatch: pytest.MonkeyPatch):
 def test_garbage_falls_back_to_the_default_instead_of_crashing_the_boot(
     monkeypatch: pytest.MonkeyPatch,
 ):
-    monkeypatch.setenv("GRAPHAGENTS_STATUS_INTERVAL", "3 seconds")
+    monkeypatch.setenv("RHIZOME_STATUS_INTERVAL", "3 seconds")
 
     assert server._status_poll_interval() == server.STATUS_POLL_INTERVAL_SECONDS
 
@@ -544,7 +544,7 @@ def test_garbage_falls_back_to_the_default_instead_of_crashing_the_boot(
 def test_a_number_with_surrounding_spaces_is_still_a_number(
     monkeypatch: pytest.MonkeyPatch,
 ):
-    monkeypatch.setenv("GRAPHAGENTS_STATUS_INTERVAL", " 5 ")
+    monkeypatch.setenv("RHIZOME_STATUS_INTERVAL", " 5 ")
 
     assert server._status_poll_interval() == 5.0
 
@@ -581,7 +581,7 @@ def test_the_daemon_starts_no_status_poll_when_the_interval_is_off(
 ):
     # The whole point of `0`: not a loop that wakes up and skips, no loop.
     calls: list[float] = []
-    monkeypatch.setenv("GRAPHAGENTS_STATUS_INTERVAL", "0")
+    monkeypatch.setenv("RHIZOME_STATUS_INTERVAL", "0")
     monkeypatch.setattr(server.Session, "poll_status", _recording_poll_status(calls))
 
     async def scenario():
@@ -598,7 +598,7 @@ def test_the_daemon_polls_the_status_at_the_interval_it_was_given(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ):
     calls: list[float] = []
-    monkeypatch.setenv("GRAPHAGENTS_STATUS_INTERVAL", "7.5")
+    monkeypatch.setenv("RHIZOME_STATUS_INTERVAL", "7.5")
     monkeypatch.setattr(server.Session, "poll_status", _recording_poll_status(calls))
 
     async def scenario():

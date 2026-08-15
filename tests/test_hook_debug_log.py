@@ -5,7 +5,7 @@ The hook swallows every error so it can never disrupt a Claude Code session
 running looks exactly like a working setup with nothing to show -- which is how
 an empty screen goes undiagnosed for hours.
 
-The escape hatch: when `GRAPHAGENTS_DEBUG_LOG` names a file, failures are
+The escape hatch: when `RHIZOME_DEBUG_LOG` names a file, failures are
 appended there. Unset, the hook stays as silent as before.
 
 Style: Arrange-Act-Assert, one failure reason per test.
@@ -44,7 +44,7 @@ def _run_hook(payload: str, env_extra: dict[str, str]) -> subprocess.CompletedPr
 
 def test_unreachable_daemon_still_exits_zero_and_prints_nothing(tmp_path: Path):
     result = _run_hook(
-        PAYLOAD, {"GRAPHAGENTS_SOCKET": str(tmp_path / "absent.sock")}
+        PAYLOAD, {"RHIZOME_SOCKET": str(tmp_path / "absent.sock")}
     )
 
     assert result.returncode == 0
@@ -57,8 +57,8 @@ def test_failure_is_recorded_when_a_debug_log_is_configured(tmp_path: Path):
     _run_hook(
         PAYLOAD,
         {
-            "GRAPHAGENTS_SOCKET": str(tmp_path / "absent.sock"),
-            "GRAPHAGENTS_DEBUG_LOG": str(log),
+            "RHIZOME_SOCKET": str(tmp_path / "absent.sock"),
+            "RHIZOME_DEBUG_LOG": str(log),
         },
     )
 
@@ -69,7 +69,7 @@ def test_failure_is_recorded_when_a_debug_log_is_configured(tmp_path: Path):
 def test_nothing_is_written_when_the_debug_log_is_not_configured(tmp_path: Path):
     log = tmp_path / "hook.log"
 
-    _run_hook(PAYLOAD, {"GRAPHAGENTS_SOCKET": str(tmp_path / "absent.sock")})
+    _run_hook(PAYLOAD, {"RHIZOME_SOCKET": str(tmp_path / "absent.sock")})
 
     assert not log.exists()
 
@@ -78,8 +78,8 @@ def test_an_unwritable_debug_log_does_not_break_the_hook(tmp_path: Path):
     result = _run_hook(
         PAYLOAD,
         {
-            "GRAPHAGENTS_SOCKET": str(tmp_path / "absent.sock"),
-            "GRAPHAGENTS_DEBUG_LOG": str(tmp_path / "no" / "such" / "dir.log"),
+            "RHIZOME_SOCKET": str(tmp_path / "absent.sock"),
+            "RHIZOME_DEBUG_LOG": str(tmp_path / "no" / "such" / "dir.log"),
         },
     )
 

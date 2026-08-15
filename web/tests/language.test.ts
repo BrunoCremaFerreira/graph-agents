@@ -136,7 +136,7 @@ describe("languageForPath: the first batch of grammars", () => {
 
 describe("languageForPath: how the extension is found", () => {
   it("ignores the directories in front of the name", () => {
-    expect(languageForPath("graphagents/normalize.py")).toBe("python");
+    expect(languageForPath("rhizome_graph/normalize.py")).toBe("python");
   });
 
   it("uses only the LAST extension, so a test file is TypeScript and not a `test.ts` language", () => {

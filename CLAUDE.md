@@ -4,7 +4,7 @@ Guidance for Claude Code when working in this repository.
 
 ## What this project is
 
-`graph-agents` is a **real-time visualizer of what each Claude Code agent is doing**
+`rhizome-graph` is a **real-time visualizer of what each Claude Code agent is doing**
 (file/directory creation, edition, deletion), rendered with the **Gource** look.
 
 The core insight: we do **not** reimplement Gource. Gource already accepts a live
@@ -51,7 +51,7 @@ Each Gource "user" (the on-screen actor/avatar) represents **one agent**.
 
 Data flows through five stages. Keep this separation when adding code.
 
-1. **Seed** — `graphagents/tree.py` walks the project root once at daemon boot and publishes
+1. **Seed** — `rhizome_graph/tree.py` walks the project root once at daemon boot and publishes
    the existing tree as `origin: "seed"` events. Without it the graph opens blank and only
    ever holds the handful of files an agent happened to touch — nothing like Gource.
 2. **Capture** — two sources, deliberately (see "Conventions & gotchas"):
@@ -82,7 +82,7 @@ Pipe-delimited: `timestamp|user|type|path|color`
 ### Agent attribution (the hard part)
 "Show what *each* agent is doing" means mapping every op to an actor. What the hook JSON
 actually carries was settled by capture, not by reasoning — measured against Claude Code
-2.1.229 with `GRAPHAGENTS_TRACE_LOG` (below). Re-measure before trusting it on a new version:
+2.1.229 with `RHIZOME_TRACE_LOG` (below). Re-measure before trusting it on a new version:
 
 - A tool call made by the **orchestrator** carries `session_id` and **no** `agent_id` /
   `agent_type` — the keys are absent, not empty.
@@ -105,38 +105,39 @@ it causes.
 ## Intended layout
 
 ```
-graphagents/normalize.py  # pure: hook JSON → Event; also actor_of / seed_event / fs_event
-graphagents/tree.py       # boot snapshot of the observed project
-graphagents/repo.py       # pure: reads .git/HEAD for the branch (never shells out to git)
-graphagents/paths.py      # pure: resolve a typed root, and complete a directory like a shell
-graphagents/hexdump.py    # pure: the xxd format, byte for byte, + is-this-binary
-graphagents/gitcmd.py     # the ONE place that forks `git` (kill + close + reap on timeout)
-graphagents/diff.py       # the uncommitted diff of one file (see the note in Status)
-graphagents/status.py     # pure parse of `git status --porcelain -z` + the poll's frame
-graphagents/file_view.py  # what a clicked file shows: diff, else text, else hex
-hooks/emit_event.py       # hook entrypoint: JSON in → daemon socket
-daemon/server.py          # EventHub: seed, attribution, dedupe, meta, WebSocket + HTTP
-daemon/watcher.py         # inotify watcher (watchdog)
-config/settings.json      # hooks to install into a target project's .claude/
-web/src/avatar.ts         # the agent figure, painted on a canvas
-web/src/eventLog.ts       # pure: the recent-changes list model (drops seed, folds repeats)
-web/src/attribution.ts    # pure: has any attributed event arrived? (latch, never unlatches)
-web/src/search.ts         # pure: match, the walk over matches, and the camera frame for them
-web/src/rootPrompt.ts     # pure: the ctrl+L bar's state (text, completion, discard on Esc)
-web/src/pick.ts           # pure: which file a click (or the resting pointer) landed on
-web/src/labels.ts         # pure: label size/placement, and which files are named this frame
-web/src/fileView.ts       # pure: the content panel's state (request, adopt, discard, tokens)
-web/src/fileViewClicks.ts # pure: which click closes the panel (never the backdrop)
-web/src/language.ts       # pure: path -> the grammar id, or null (no generic fallback)
-web/src/diffModel.ts      # pure: the unified diff, parsed into numbered rows
-web/src/fileDoc.ts        # pure: what the panel draws — rows, gutter, tokenize requests
-web/src/highlight.ts      # the ONE place that names shiki (lazy wasm + 22 literal imports)
-web/src/readMarker.ts     # the violet ring a file wears while an agent is reading it
-web/src/statusList.ts     # pure: the uncommitted-changes panel (order, cap, is it visible)
-web/src/searchKeys.ts     # pure: what ctrl+F / F3 / Esc mean
-web/src/*Hud.ts           # thin DOM painters: context caption, event list, attribution, search
-                          # box, git status panel
-run.sh / start.sh         # minimal launcher / full bootstrap
+rhizome_graph/normalize.py  # pure: hook JSON → Event; also actor_of / seed_event / fs_event
+rhizome_graph/tree.py       # boot snapshot of the observed project
+rhizome_graph/repo.py       # pure: reads .git/HEAD for the branch (never shells out to git)
+rhizome_graph/paths.py      # pure: resolve a typed root, and complete a directory like a shell
+rhizome_graph/hexdump.py    # pure: the xxd format, byte for byte, + is-this-binary
+rhizome_graph/gitcmd.py     # the ONE place that forks `git` (kill + close + reap on timeout)
+rhizome_graph/diff.py       # the uncommitted diff of one file (see the note in Status)
+rhizome_graph/status.py     # pure parse of `git status --porcelain -z` + the poll's frame
+rhizome_graph/file_view.py  # what a clicked file shows: diff, else text, else hex
+hooks/emit_event.py         # hook entrypoint: JSON in → daemon socket
+daemon/server.py            # EventHub: seed, attribution, dedupe, meta, WebSocket + HTTP
+daemon/watcher.py           # inotify watcher (watchdog)
+config/settings.json        # hooks to install into a target project's .claude/
+web/src/avatar.ts           # the agent figure, painted on a canvas
+web/src/eventLog.ts         # pure: the recent-changes list model (drops seed, folds repeats)
+web/src/attribution.ts      # pure: has any attributed event arrived? (latch, never unlatches)
+web/src/search.ts           # pure: match, the walk over matches, and the camera frame for them
+web/src/rootPrompt.ts       # pure: the ctrl+L bar's state (text, completion, discard on Esc)
+web/src/pick.ts             # pure: which file a click (or the resting pointer) landed on
+web/src/labels.ts           # pure: label size/placement, and which files are named this frame
+web/src/fileView.ts         # pure: the content panel's state (request, adopt, discard, tokens)
+web/src/fileViewClicks.ts   # pure: which click closes the panel (never the backdrop)
+web/src/language.ts         # pure: path -> the grammar id, or null (no generic fallback)
+web/src/diffModel.ts        # pure: the unified diff, parsed into numbered rows
+web/src/fileDoc.ts          # pure: what the panel draws — rows, gutter, tokenize requests
+web/src/highlight.ts        # the ONE place that names shiki (lazy wasm + 22 literal imports)
+web/src/readMarker.ts       # the violet ring a file wears while an agent is reading it
+web/src/statusList.ts       # pure: the uncommitted-changes panel (order, cap, is it visible)
+web/src/searchKeys.ts       # pure: what ctrl+F / F3 / Esc mean
+web/src/branding.ts         # pure: APP_NAME, so the untestable renderer never spells it
+web/src/*Hud.ts             # thin DOM painters: context caption, event list, attribution, search
+                            # box, git status panel
+run.sh / start.sh           # minimal launcher / full bootstrap
 ```
 
 ## Running (target workflow)
@@ -218,7 +219,7 @@ asking the tester for the RED tests, not by asking a developer to implement blin
 
 Web MVP implemented and verified end-to-end (TDD).
 
-- **Backend** (`graphagents/`, `hooks/`, `daemon/`): 542/542 pytest green. Hook is stdlib-only
+- **Backend** (`rhizome_graph/`, `hooks/`, `daemon/`): 549/549 pytest green. Hook is stdlib-only
   and exits 0 on garbage input. Daemon seeds the project tree at boot, ingests hook events on
   a Unix socket, watches the filesystem, and serves `web/dist` over HTTP **and** broadcasts
   events over WebSocket (`/ws`) on a single port (`:8080`) — one forwarded port is enough for
@@ -291,7 +292,7 @@ Web MVP implemented and verified end-to-end (TDD).
   or copying a snippet takes the numbers with it; and `--- a/x` / `+++ b/x` are `meta`,
   classified before the `+`/`-` rules — the old `diffLineClass` coloured them as del/add, which
   with a gutter would have handed them line numbers.
-- **Two callers fork `git`, through one runner.** `graphagents/gitcmd.py` owns the fork itself
+- **Two callers fork `git`, through one runner.** `rhizome_graph/gitcmd.py` owns the fork itself
   and `diff.py`/`status.py` own the argv and the parsing. The "files, never `subprocess`" rule
   in `repo.py` is about the branch poll, and it still holds there: the branch is a dozen bytes
   in `.git/HEAD`. Neither of these has a small file to read — a diff means the index, zlib
@@ -308,7 +309,7 @@ Web MVP implemented and verified end-to-end (TDD).
   click in the graph opens, through the same `openFile` in `main.ts`. Four things are
   load-bearing:
   - **It is a poll, in a task of its own** (`STATUS_POLL_INTERVAL_SECONDS`, 3 s, or
-    `GRAPHAGENTS_STATUS_INTERVAL`; ≤ 0 disables it and creates no task). It cannot ride the
+    `RHIZOME_STATUS_INTERVAL`; ≤ 0 disables it and creates no task). It cannot ride the
     branch poll: that one is fork-free by doctrine. It cannot be event-driven either — a
     `git add` or a `git commit` typed in a terminal touches only `.git/`, which the watcher
     drops through `tree.is_ignored`, so the list would never notice the commit that emptied it.
@@ -324,11 +325,11 @@ Web MVP implemented and verified end-to-end (TDD).
   - **A deleted file had to become clickable**, so `file_view` now tries the diff *before*
     concluding "no such file": the row the user most wants to open is the one whose content is
     gone. The directory check stays ahead of the diff.
-- **Control commands are loopback-only** (`GRAPHAGENTS_ALLOW_REMOTE_CONTROL=1` opens them up).
+- **Control commands are loopback-only** (`RHIZOME_ALLOW_REMOTE_CONTROL=1` opens them up).
   The listener binds every interface, so without the gate anyone who can reach `:8080` could
   list the host's directories and repoint the graph. SSH and VS Code forwarding arrive as
   loopback, so the ordinary remote setup is unaffected.
-- **Frontend** (`web/`): 957/957 vitest green, `tsc` + `vite build` clean. `shiki` (pinned to
+- **Frontend** (`web/`): 958/958 vitest green, `tsc` + `vite build` clean. `shiki` (pinned to
   3.23.0 — 4.x needs Node ≥ 20 and this machine has 18) is the first runtime dependency added
   since `d3-force`; note that `npm install` under npm 10 strips the `libc` fields from
   `package-lock.json`, so check `git diff` on the lock after touching dependencies. Gource-style WebGL
@@ -448,15 +449,15 @@ Web MVP implemented and verified end-to-end (TDD).
   shows, thicken the inner stroke or rasterise the texture larger; the tests pin only
   relations between the radii, never their values, so retuning is free.
 
-Run: `GRAPHAGENTS_PROJECT_ROOT=/path/to/observed ./start.sh`. Point the root at the project
-you want to *watch*, not at `graph-agents` — or start anywhere and switch with `ctrl+L` in the
+Run: `RHIZOME_PROJECT_ROOT=/path/to/observed ./start.sh`. Point the root at the project
+you want to *watch*, not at `rhizome-graph` — or start anywhere and switch with `ctrl+L` in the
 page (the switch is global: one daemon watches one root, so every viewer follows). Install attribution by copying the `hooks` block
 from `config/settings.json` into the observed project's `.claude/settings.json` — hook changes
 only apply to sessions started afterwards. Deps: `pip install -e '.[daemon]'`; the hook needs
 nothing. Rebuilding `web/dist` (or running vitest/tsc) needs Node 18+ — `start.sh` silently
 serves a stale `dist` when node is missing, so a front-end change can look like it did
-nothing. Debug an empty screen with `GRAPHAGENTS_DEBUG_LOG` (records hook *failures*) or
-`GRAPHAGENTS_TRACE_LOG` (records every raw payload, which is how the shape of the hook JSON
+nothing. Debug an empty screen with `RHIZOME_DEBUG_LOG` (records hook *failures*) or
+`RHIZOME_TRACE_LOG` (records every raw payload, which is how the shape of the hook JSON
 gets settled on a new Claude Code version) on the hook command.
 
 **A tree that updates while nobody is on camera means the hooks are not installed.** The

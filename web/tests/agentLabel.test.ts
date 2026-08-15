@@ -36,7 +36,7 @@ function subagentRaw(): Record<string, unknown> {
     ts: 1754870400.5,
     agent: "a1b2c3d4e5f60718",
     type: "M",
-    path: "graphagents/normalize.py",
+    path: "rhizome_graph/normalize.py",
     color: "FFAA00",
     origin: "hook",
     label: "developer-backend",
@@ -103,7 +103,7 @@ describe("parseEvent: the readable agent label", () => {
 
     const parsed = parseEvent(raw) as AgentEvent;
 
-    expect(parsed.path).toBe("graphagents/normalize.py");
+    expect(parsed.path).toBe("rhizome_graph/normalize.py");
     expect(parsed.type).toBe("M");
     expect(parsed.color).toBe("FFAA00");
     expect(parsed.origin).toBe("hook");
@@ -151,7 +151,7 @@ describe("parseEvent: a label does not weaken the rest of the validation", () =>
     expect(
       parseEvent({
         kind: "meta",
-        root: "~/projects/graph-agents",
+        root: "~/projects/rhizome-graph",
         branch: "development",
         label: "developer-backend",
       }),

@@ -1,6 +1,6 @@
 """Contract tests (RED) for EventHub.reset: switching the observed project.
 
-Motivation: the root is fixed at boot (``GRAPHAGENTS_PROJECT_ROOT`` reaches the
+Motivation: the root is fixed at boot (``RHIZOME_PROJECT_ROOT`` reaches the
 hub, the watcher, the tree scan and the branch poll), so looking at a second
 project means restarting the daemon. The new feature repoints it at runtime, and
 `reset` is the moment of the switch on the server side.

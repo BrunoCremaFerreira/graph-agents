@@ -42,7 +42,7 @@ import {
 } from "../src/rootPrompt";
 
 /** The root the daemon is watching when the user hits ctrl+L. */
-const CURRENT = "/home/brn/projects/graph-agents";
+const CURRENT = "/home/brn/projects/rhizome-graph";
 
 /** A prompt opened on the current root, which is where every scenario starts. */
 function opened(): RootPromptState {

@@ -83,7 +83,7 @@ describe("parseEvent", () => {
     // one, the graph would grow a node for the observed root's own path.
     // Mirror of the parseMeta side in tests/meta.test.ts.
     expect(
-      parseEvent({ kind: "meta", root: "~/projects/graph-agents", branch: "development" }),
+      parseEvent({ kind: "meta", root: "~/projects/rhizome-graph", branch: "development" }),
     ).toBeNull();
   });
 });

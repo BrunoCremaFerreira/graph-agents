@@ -13,8 +13,8 @@ such file for the status: the answer is the index compared against `HEAD` *and*
 against every file in the working tree, which is precisely what `git status` is.
 Nor can the watcher supply it -- it sees writes, not whether a write brought a
 file back to what `HEAD` already had. So this forks, on a timer, and every
-defence in :mod:`graphagents.gitcmd` applies (that discipline is shared with
-:mod:`graphagents.diff` rather than written twice).
+defence in :mod:`rhizome_graph.gitcmd` applies (that discipline is shared with
+:mod:`rhizome_graph.diff` rather than written twice).
 
 Everything except :func:`git_status` is pure, and split that way for the reason
 the same split exists in `diff.py`: the format decisions are the part that can be
@@ -36,8 +36,8 @@ from __future__ import annotations
 import os
 from dataclasses import dataclass
 
-from graphagents.gitcmd import run_git
-from graphagents.repo import find_checkout_root
+from rhizome_graph.gitcmd import run_git
+from rhizome_graph.repo import find_checkout_root
 
 #: The states the panel paints. Everything git can report collapses into one of
 #: these four, or is dropped -- a fifth colour nobody defined is not a feature.
@@ -235,11 +235,11 @@ async def git_status(
     "a repository, and it is clean". The panel renders those differently.
 
     Outside a repository this does not fork at all. The question is answered from
-    disk by :func:`graphagents.repo.find_checkout_root`, and this runs on a
+    disk by :func:`rhizome_graph.repo.find_checkout_root`, and this runs on a
     timer for the life of the daemon -- forking `git` every three seconds to be
     told "not a git repository" is pure waste.
 
-    Never raises and never hangs; see :mod:`graphagents.gitcmd`.
+    Never raises and never hangs; see :mod:`rhizome_graph.gitcmd`.
     """
     try:
         checkout_root = find_checkout_root(root)

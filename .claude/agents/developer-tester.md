@@ -13,14 +13,14 @@ existence in this project, and the one rule you may not bend.
 Given a behavior to specify, you write the **smallest failing test** that pins it down, run
 it, and confirm it fails **for the right reason**. Then you stop and hand back.
 
-- Backend (`graphagents/`, `hooks/`, `daemon/`): pytest, in `tests/`. Run with
+- Backend (`rhizome_graph/`, `hooks/`, `daemon/`): pytest, in `tests/`. Run with
   `.venv/bin/python -m pytest`.
 - Frontend (`web/`): vitest, in `web/tests/`. Run with `web/node_modules/.bin/vitest run`.
   Needs Node 18+ on PATH; if `node` is missing, say so and stop rather than guessing.
 
 ## Hard boundaries
 
-- **Never** create or edit anything under `graphagents/`, `hooks/`, `daemon/`, or `web/src/`.
+- **Never** create or edit anything under `rhizome_graph/`, `hooks/`, `daemon/`, or `web/src/`.
   If making a test pass would require production code, that is the implementation agent's
   job — describe what the module must expose and hand back.
 - The one exception is *reading* production code, which you should do freely to write tests

@@ -26,13 +26,13 @@ _SHORT_SHA_LENGTH = 7
 _SHA_LENGTH = 40
 
 
-def resolve_git_dir(root: str) -> str | None:
-    """Find the git directory governing `root`, walking upward, or ``None``.
+def _find_dot_git(root: str) -> tuple[str, str] | None:
+    """The nearest `.git` at or above `root`, as ``(holder, dot_git)``.
 
-    Two shapes exist on disk. A normal repository has a `.git` *directory*. A
-    worktree or a submodule has a `.git` *file* holding ``gitdir: <path>``, where
-    a relative path is relative to the checkout that contains the file -- not to
-    the caller's cwd, which is why it is joined against `current` here.
+    `holder` is the directory the `.git` sits in -- the top of the working tree.
+    Both questions this module answers start from the same upward walk, and they
+    genuinely differ in the answer: for a worktree or a submodule the `.git` is a
+    *file* whose contents point at a git directory somewhere else entirely.
 
     The search stops when `dirname` stops moving ("/" is its own parent), so the
     daemon cannot be hung by a root that is outside any repository.
@@ -40,14 +40,51 @@ def resolve_git_dir(root: str) -> str | None:
     current = os.path.abspath(root)
     while True:
         candidate = os.path.join(current, ".git")
-        if os.path.isdir(candidate):
-            return candidate
-        if os.path.isfile(candidate):
-            return _read_gitdir_file(candidate, current)
+        if os.path.isdir(candidate) or os.path.isfile(candidate):
+            return current, candidate
         parent = os.path.dirname(current)
         if parent == current:
             return None
         current = parent
+
+
+def resolve_git_dir(root: str) -> str | None:
+    """Find the git directory governing `root`, walking upward, or ``None``.
+
+    Two shapes exist on disk. A normal repository has a `.git` *directory*. A
+    worktree or a submodule has a `.git` *file* holding ``gitdir: <path>``, where
+    a relative path is relative to the checkout that contains the file -- not to
+    the caller's cwd, which is why it is joined against the holder here.
+    """
+    found = _find_dot_git(root)
+    if found is None:
+        return None
+    holder, candidate = found
+    if os.path.isdir(candidate):
+        return candidate
+    return _read_gitdir_file(candidate, holder)
+
+
+def find_checkout_root(root: str) -> str | None:
+    """The top of the working tree containing `root`, or ``None`` outside one.
+
+    Not the same question as :func:`resolve_git_dir`, and the difference is the
+    reason this exists: `git status` reports every path relative to the top of
+    the *checkout*, while the graph draws paths relative to the *observed* root,
+    which ``ctrl+L`` allows to be any subdirectory. Rebasing one onto the other
+    needs the checkout root -- and for a worktree or a submodule the git
+    directory lives somewhere else entirely, so joining a reported path onto it
+    would point at nothing.
+
+    Absolute, because the answer is compared against an absolute observed root;
+    a relative one would match nothing and silently drop every entry. Never
+    raises, like everything else here: the caller is a background poll.
+    """
+    try:
+        found = _find_dot_git(root)
+        return found[0] if found is not None else None
+    except Exception:
+        return None
 
 
 def _read_gitdir_file(candidate: str, holder: str) -> str | None:

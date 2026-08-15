@@ -318,6 +318,86 @@ export function parseFileView(raw: unknown): FileView | null {
   };
 }
 
+/**
+ * How git sees a path that is not committed yet.
+ *
+ * The four words this page knows how to draw. A newer daemon reporting a fifth
+ * (a rename, say) is not an error — the row is simply dropped, see
+ * {@link parseStatus}.
+ */
+export type GitStatusState = "untracked" | "modified" | "added" | "deleted";
+
+/** The four states, for runtime validation. Anything else drops its row. */
+const GIT_STATUS_STATES: ReadonlySet<string> = new Set<GitStatusState>([
+  "untracked",
+  "modified",
+  "added",
+  "deleted",
+]);
+
+/** One uncommitted path, exactly as the daemon reported it. */
+export interface GitStatusEntry {
+  /** Path relative to the observed root; not normalized here. */
+  path: string;
+  /** What git says about it. */
+  state: GitStatusState;
+}
+
+/**
+ * The working tree's uncommitted changes, pushed on the same socket as events.
+ *
+ * The browser cannot read the disk (nor run `git`), so "what is dirty right
+ * now?" is answered by the daemon and repolled. Discriminated from every other
+ * frame on this socket by `kind: "status"`.
+ */
+export interface GitStatus {
+  /** Whether the observed root is a git repository at all. */
+  repo: boolean;
+  /** Whether the daemon cut the list short. */
+  truncated: boolean;
+  /** The dirty paths, in the order the daemon walked them. */
+  entries: GitStatusEntry[];
+}
+
+/**
+ * Validate and parse a raw WebSocket message into a {@link GitStatus}.
+ *
+ * Contract (see tests/statusProtocol.test.ts):
+ *   - `kind` must be exactly `"status"`. The gate matters in both directions: a
+ *     status frame routed as activity would grow a node called "status" in the
+ *     graph, and an activity event mistaken for a status frame would repaint the
+ *     whole panel from one file save.
+ *   - `entries` DEGRADES, as `parseCompletion`'s `matches` does: absent or
+ *     mistyped it becomes `[]`, and a junk item is dropped ONE AT A TIME rather
+ *     than costing the frame. This is the load-bearing choice here. A newer
+ *     daemon that adds a fifth state would otherwise blank the panel for the
+ *     four files this page does understand — and an empty panel does not read as
+ *     "I could not parse one row", it reads as "the tree is clean", which is a
+ *     bigger lie than a partial list.
+ *   - `repo` and `truncated` are booleans or they are `false`: a truthy
+ *     non-boolean would claim the output was cut when it was whole, or claim a
+ *     git repository where there is none.
+ *   - Order is preserved; sorting and capping belong to `statusList.ts`.
+ *   - NEVER throws: this comes off the network.
+ */
+export function parseStatus(raw: unknown): GitStatus | null {
+  if (!isRecord(raw)) return null;
+  if (raw.kind !== "status") return null;
+
+  const entries: GitStatusEntry[] = [];
+  if (Array.isArray(raw.entries)) {
+    for (const item of raw.entries) {
+      if (!isRecord(item)) continue;
+      const { path, state } = item;
+      if (typeof path !== "string") continue;
+      if (typeof state !== "string" || !GIT_STATUS_STATES.has(state)) continue;
+      entries.push({ path, state: state as GitStatusState });
+    }
+  }
+
+  return { repo: raw.repo === true, truncated: raw.truncated === true, entries };
+}
+
 /** Marker standing in for the elided middle of a truncated string. */
 const ELISION = "…";
 

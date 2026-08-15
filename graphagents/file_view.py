@@ -3,15 +3,26 @@
 The graph says *that* a file changed and nothing about *what* is in it. This
 module builds the one frame that answers the click, deciding in a fixed order:
 
-  1. the path is refused, missing, or a directory -> ``error``, and no content;
-  2. the file has an uncommitted change -> ``mode: "diff"``;
-  3. it is text -> ``mode: "text"``;
-  4. it is binary -> ``mode: "hex"``.
+  1. the path is refused (it escapes the observed root) -> ``error``;
+  2. it is a directory -> ``error``;
+  3. it has an uncommitted change -> ``mode: "diff"``;
+  4. it is not on disk and git had nothing either -> ``error: no such file``;
+  5. it is text -> ``mode: "text"``;
+  6. it is binary -> ``mode: "hex"``.
 
-The order is the point. A binary that was just modified is shown as its diff
-("Binary files ... differ", which is all git has to say about it) rather than as
-a hex dump of the new bytes: the question the viewer clicked to ask was "what did
-the agent just do to this file".
+The order is the point, twice over.
+
+A binary that was just modified is shown as its diff ("Binary files ... differ",
+which is all git has to say about it) rather than as a hex dump of the new bytes:
+the question the viewer clicked to ask was "what did the agent just do to this
+file".
+
+And existence is asked about *after* git, not before. A **deleted** file -- the
+single entry the status panel most wants to offer for a click -- is not on disk
+by definition, and the old order answered "no such file" while ``git diff HEAD``
+had the whole removed content ready to show. The directory check stays ahead of
+git regardless: ``git diff HEAD -- src`` happily produces the combined diff of
+everything under a folder, and clicking a folder must not open that.
 
 :func:`resolve_inside` is the security half. The path arrives over a WebSocket,
 as text, and unlike the completion commands it is used to **read file contents**.
@@ -82,14 +93,17 @@ async def file_view(
     target = resolve_inside(root, relative_path)
     if target is None:
         return _frame(relative_path, error="refused: outside the observed project")
-    if not os.path.exists(target):
-        return _frame(relative_path, error="no such file")
     if os.path.isdir(target):
         return _frame(relative_path, error="that is a directory")
 
     diff = await git_diff(root, relative_path)
     if diff is not None:
         return _frame(relative_path, mode="diff", content=diff)
+
+    if not os.path.exists(target):
+        # Reached only once git has said it knows nothing about the path either,
+        # so a deletion opens its diff instead of an error.
+        return _frame(relative_path, error="no such file")
 
     try:
         data, truncated = await asyncio.to_thread(_read_capped, target, max_bytes)

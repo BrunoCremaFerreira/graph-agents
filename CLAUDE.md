@@ -94,7 +94,9 @@ graphagents/tree.py       # boot snapshot of the observed project
 graphagents/repo.py       # pure: reads .git/HEAD for the branch (never shells out to git)
 graphagents/paths.py      # pure: resolve a typed root, and complete a directory like a shell
 graphagents/hexdump.py    # pure: the xxd format, byte for byte, + is-this-binary
-graphagents/diff.py       # the ONE module that runs `git` (see the note in Status)
+graphagents/gitcmd.py     # the ONE place that forks `git` (kill + close + reap on timeout)
+graphagents/diff.py       # the uncommitted diff of one file (see the note in Status)
+graphagents/status.py     # pure parse of `git status --porcelain -z` + the poll's frame
 graphagents/file_view.py  # what a clicked file shows: diff, else text, else hex
 hooks/emit_event.py       # hook entrypoint: JSON in → daemon socket
 daemon/server.py          # EventHub: seed, attribution, dedupe, meta, WebSocket + HTTP
@@ -108,8 +110,10 @@ web/src/rootPrompt.ts     # pure: the ctrl+L bar's state (text, completion, disc
 web/src/pick.ts           # pure: which file a click (or the resting pointer) landed on
 web/src/labels.ts         # pure: label size/placement, and which files are named this frame
 web/src/fileView.ts       # pure: the content panel's state (request, adopt, discard)
+web/src/statusList.ts     # pure: the uncommitted-changes panel (order, cap, is it visible)
 web/src/searchKeys.ts     # pure: what ctrl+F / F3 / Esc mean
-web/src/*Hud.ts           # thin DOM painters: context caption, event list, attribution, search box
+web/src/*Hud.ts           # thin DOM painters: context caption, event list, attribution, search
+                          # box, git status panel
 run.sh / start.sh         # minimal launcher / full bootstrap
 ```
 
@@ -169,7 +173,7 @@ asking the tester for the RED tests, not by asking a developer to implement blin
 
 Web MVP implemented and verified end-to-end (TDD).
 
-- **Backend** (`graphagents/`, `hooks/`, `daemon/`): 343/343 pytest green. Hook is stdlib-only
+- **Backend** (`graphagents/`, `hooks/`, `daemon/`): 464/464 pytest green. Hook is stdlib-only
   and exits 0 on garbage input. Daemon seeds the project tree at boot, ingests hook events on
   a Unix socket, watches the filesystem, and serves `web/dist` over HTTP **and** broadcasts
   events over WebSocket (`/ws`) on a single port (`:8080`) — one forwarded port is enough for
@@ -194,18 +198,44 @@ Web MVP implemented and verified end-to-end (TDD).
   `resolve_inside` refuses anything resolving outside the observed root (symlinks included),
   and the content is capped at 256 KiB, flagged `truncated`, because it crosses the WebSocket
   whole.
-- **`graphagents/diff.py` is the only module that runs `git`,** and that is deliberate. The
-  "files, never `subprocess`" rule in `repo.py` is about the branch poll, which reads every
-  couple of seconds; a diff is one fork per user gesture, and reimplementing it would mean the
-  index, zlib objects and a diff algorithm. It never raises: no repo, no `git`, no change, or a
-  timeout all mean `None`, which reads as "no diff, show the content". On timeout the child is
+- **Two callers fork `git`, through one runner.** `graphagents/gitcmd.py` owns the fork itself
+  and `diff.py`/`status.py` own the argv and the parsing. The "files, never `subprocess`" rule
+  in `repo.py` is about the branch poll, and it still holds there: the branch is a dozen bytes
+  in `.git/HEAD`. Neither of these has a small file to read — a diff means the index, zlib
+  objects and a diff algorithm, and the working-tree status means the same plus the untracked
+  walk — so reimplementing them to honour a rule written about one line of one file would be
+  the wrong trade. Nothing here raises: no repo, no `git`, a non-zero exit or a timeout all
+  mean `None`, which each caller reads as its own "nothing to show". On timeout the child is
   killed *and* its transport closed before waiting — a wrapper script leaves a grandchild
   holding the inherited pipe, and `wait()` alone hangs until it dies.
+- **The bottom-right panel lists what is uncommitted,** and only then: over a clean tree, or
+  outside a repository, it is not on screen at all (`visible` derives from the entry count,
+  never from the `repo` flag — a permanent empty strip would report nothing). A row is a
+  `modified` / `added` / `deleted` / `untracked` path, and clicking it opens the same viewer a
+  click in the graph opens, through the same `openFile` in `main.ts`. Four things are
+  load-bearing:
+  - **It is a poll, in a task of its own** (`STATUS_POLL_INTERVAL_SECONDS`, 3 s, or
+    `GRAPHAGENTS_STATUS_INTERVAL`; ≤ 0 disables it and creates no task). It cannot ride the
+    branch poll: that one is fork-free by doctrine. It cannot be event-driven either — a
+    `git add` or a `git commit` typed in a terminal touches only `.git/`, which the watcher
+    drops through `tree.is_ignored`, so the list would never notice the commit that emptied it.
+    A round is skipped while one is still in flight, and outside a repository nothing forks at
+    all (`find_checkout_root` answers first).
+  - **The frame is deduped** in a replaceable slot like `_meta`, so a status that has not
+    changed costs nothing on the wire, and it sits in `replay_messages()` before the seed —
+    the panel is right on the first paint, not three seconds later.
+  - **`git status` reports paths relative to the REPOSITORY root** even when run from a
+    subdirectory (measured, not assumed), while everything else here — the graph, the click,
+    `resolve_inside` — speaks in paths relative to the OBSERVED root, which `ctrl+L` may have
+    pointed at a subdirectory. `relativize` converts them and drops what falls outside.
+  - **A deleted file had to become clickable**, so `file_view` now tries the diff *before*
+    concluding "no such file": the row the user most wants to open is the one whose content is
+    gone. The directory check stays ahead of the diff.
 - **Control commands are loopback-only** (`GRAPHAGENTS_ALLOW_REMOTE_CONTROL=1` opens them up).
   The listener binds every interface, so without the gate anyone who can reach `:8080` could
   list the host's directories and repoint the graph. SSH and VS Code forwarding arrive as
   loopback, so the ordinary remote setup is unaffected.
-- **Frontend** (`web/`): 670/670 vitest green, `tsc` + `vite build` clean. Gource-style WebGL
+- **Frontend** (`web/`): 782/782 vitest green, `tsc` + `vite build` clean. Gource-style WebGL
   renderer (three.js force layout + `UnrealBloomPass` + per-agent figure and beams), pure
   `simulation.ts` model, typed `parseEvent`, auto-reconnecting `wsClient.ts`. Label placement
   lives in pure `labels.ts` (like `view.ts`) because `renderer.ts` needs a GL context and
@@ -263,9 +293,15 @@ Web MVP implemented and verified end-to-end (TDD).
   the agent; `rm -rf docs/` prunes the subtree; a non-agent edit appears with no actor; the
   meta frame arrives first and a branch switch is pushed without reconnecting; real captured
   hook payloads replayed through the daemon yield two distinct actors, the subagent's carrying
-  its `agent_type` as a label.
+  its `agent_type` as a label. For the status panel, against a scratch repository holding one
+  file of each state: the frame reaches a fresh client ahead of the seed with the four states
+  correct and clean files absent; clicking the *deleted* file answers `mode: "diff"` with the
+  removal; committing everything empties the list (`repo: true`, no entries); switching the
+  root to a subdirectory relativizes the paths to it and drops what is outside; a root outside
+  any repository answers `repo: false`.
   **Not yet verified:** the actual in-browser visual (this host has no Chrome, and a headless
-  screenshot of an animated force layout proves nothing).
+  screenshot of an animated force layout proves nothing) — including whether the new
+  bottom-right panel clears `#context` and `#hud` at narrow window widths.
 
 Run: `GRAPHAGENTS_PROJECT_ROOT=/path/to/observed ./start.sh`. Point the root at the project
 you want to *watch*, not at `graph-agents` — or start anywhere and switch with `ctrl+L` in the

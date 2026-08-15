@@ -12,9 +12,11 @@ import {
   parseMeta,
   parseReset,
   parseRootError,
+  parseStatus,
   type AgentEvent,
   type DaemonMeta,
   type FileView,
+  type GitStatus,
   type RootCompletion,
   type RootError,
   type RootReset,
@@ -26,6 +28,7 @@ export type CompletionSink = (completion: RootCompletion) => void;
 export type ResetSink = (reset: RootReset) => void;
 export type RootErrorSink = (error: RootError) => void;
 export type FileViewSink = (view: FileView) => void;
+export type StatusSink = (status: GitStatus) => void;
 
 export interface WsClientOptions {
   /** Backoff floor / ceiling in ms. */
@@ -47,6 +50,12 @@ export interface WsClientOptions {
    * for the same reason as the frames above.
    */
   readonly onFileView?: FileViewSink;
+  /**
+   * The working tree's uncommitted changes. Optional and consumed either way,
+   * for the same reason as the frames above: an old page against a new daemon
+   * would otherwise see this frame fall through to `parseEvent`.
+   */
+  readonly onStatus?: StatusSink;
 }
 
 /** Used only outside a browser (tests, SSR); real pages derive from location. */
@@ -85,6 +94,7 @@ export class WsClient {
   private readonly onReset: ResetSink | undefined;
   private readonly onRootError: RootErrorSink | undefined;
   private readonly onFileView: FileViewSink | undefined;
+  private readonly onStatus: StatusSink | undefined;
 
   constructor(
     private readonly url: string,
@@ -98,6 +108,7 @@ export class WsClient {
     this.onReset = options.onReset;
     this.onRootError = options.onRootError;
     this.onFileView = options.onFileView;
+    this.onStatus = options.onStatus;
     this.delay = this.minDelay;
   }
 
@@ -188,6 +199,15 @@ export class WsClient {
     const fileView = parseFileView(raw);
     if (fileView) {
       this.onFileView?.(fileView);
+      return;
+    }
+    // Before `parseEvent` too, and consumed with or without a sink: a status
+    // frame is a statement about the working tree, not a change to a path, so
+    // routing it on would grow a node called "status" in the graph — and the
+    // poll repeats every couple of seconds, keeping it there forever.
+    const status = parseStatus(raw);
+    if (status) {
+      this.onStatus?.(status);
       return;
     }
     const event = parseEvent(raw);

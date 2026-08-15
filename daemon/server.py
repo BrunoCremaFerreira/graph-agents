@@ -76,6 +76,7 @@ from graphagents.normalize import (
 )
 from graphagents.paths import complete_dir, resolve_root
 from graphagents.repo import display_root, read_branch
+from graphagents.status import git_status, status_frame
 from graphagents.tree import scan_tree
 
 LOGGER = logging.getLogger("graphagents.daemon")
@@ -104,6 +105,14 @@ COALESCE_WINDOW_SECONDS = 0.75
 #: graph with index churn. One small file read every couple of seconds is free.
 REPO_POLL_INTERVAL_SECONDS = 2.0
 
+#: How often the working tree is re-read for the HUD's status panel. Slower than
+#: the branch poll on purpose, and in a task of its own: the branch is a dozen
+#: bytes of `.git/HEAD`, while this forks `git status`, which walks the whole
+#: working tree (there is no file to read that answers it -- see
+#: :mod:`graphagents.status`). Sharing the branch poll's loop would drag the
+#: caption down to the slowest of the two.
+STATUS_POLL_INTERVAL_SECONDS = 3.0
+
 REPO_ROOT = Path(__file__).resolve().parent.parent
 WEB_DIST = REPO_ROOT / "web" / "dist"
 
@@ -123,6 +132,10 @@ class EventHub:
         replaceable slot of its own, for the same reason: it is re-published on
         every branch switch, and appending it to either list would let a busy
         session grow the replay or evict the tree from it.
+      * ``_status`` -- the git-status panel, in a slot of the same kind and for a
+        sharper version of the same reason: it is re-published every few seconds
+        for the whole life of the session, so appended it would grow the replay
+        without bound and eventually push the project's own tree out of it.
       * ``_reset`` -- the last "the observed project changed, clear everything"
         frame, in a replaceable slot like ``_meta`` (see :meth:`reset`).
       * ``_last_hook`` -- the actor that acted most recently, as
@@ -147,6 +160,7 @@ class EventHub:
         self._seed: list[str] = []
         self._recent: deque[str] = deque(maxlen=buffer_size)
         self._meta: str | None = None
+        self._status: str | None = None
         self._reset: str | None = None
         self._clients: set[ServerConnection] = set()
         self._attribution_window = attribution_window
@@ -166,11 +180,14 @@ class EventHub:
         anything sent afterwards -- caption included -- must come *after* it or
         be wiped by it. The meta line follows, so the HUD is captioned before the
         first node appears; there is none until the daemon has looked at the
-        repository.
+        repository. The status panel comes next, after the caption that names the
+        project it belongs to and before the tree: painted first it would be a
+        list of changes with no project attached to them.
         """
         reset = [self._reset] if self._reset is not None else []
         meta = [self._meta] if self._meta is not None else []
-        return [*reset, *meta, *self._seed, *self._recent]
+        status = [self._status] if self._status is not None else []
+        return [*reset, *meta, *status, *self._seed, *self._recent]
 
     async def register(self, websocket: ServerConnection) -> None:
         """Add a client and replay the tree plus recent activity."""
@@ -201,6 +218,25 @@ class EventHub:
         self._meta = message
         broadcast(self._clients, message)
 
+    def set_status(self, frame: dict) -> None:
+        """Publish the git-status panel, but only when it actually changed.
+
+        The poll asks every three seconds and the answer is usually
+        byte-identical -- an agent may not touch the tree for minutes -- so
+        re-sending it would be pure noise on the wire for every connected
+        browser, forever. The comparison is on the encoded message, not the dict,
+        because that is exactly what a client would receive.
+
+        Compact separators for the same reason as :meth:`set_meta`, and a
+        stronger one: this frame is republished for the life of the session and
+        can carry two hundred entries.
+        """
+        message = json.dumps(frame, separators=(",", ":"))
+        if message == self._status:
+            return
+        self._status = message
+        broadcast(self._clients, message)
+
     def reset(self, project_root: str) -> None:
         """Point the hub at another project and forget the one before it.
 
@@ -216,6 +252,12 @@ class EventHub:
         ``_hook_paths``/``_fs_paths`` would swallow a genuine first event as the
         echo of a change that happened in another project.
 
+        ``_status`` goes too, and not only because it describes the old project:
+        its paths do not exist under the new root, so the panel would offer
+        entries a click on which `resolve_inside` refuses. Clearing it also
+        clears the dedupe, which matters -- two projects can be dirty in exactly
+        the same way, and the second one would otherwise never be announced.
+
         The frame is kept in a slot of its own so a client connecting *after* the
         switch is told to clear too. Unlike :meth:`set_meta` this does not dedupe
         on the value: resetting to the same root is a request for a clean slate,
@@ -225,6 +267,7 @@ class EventHub:
         self._known_paths.clear()
         self._seed.clear()
         self._recent.clear()
+        self._status = None
         self._last_hook = None
         self._hook_paths.clear()
         self._fs_paths.clear()
@@ -444,6 +487,7 @@ class Session:
         self.root = os.path.normpath(os.path.abspath(project_root))
         self.hub = EventHub(project_root=self.root)
         self._watcher = None
+        self._status_busy = False
 
     # -- lifecycle ---------------------------------------------------------
 
@@ -463,6 +507,25 @@ class Session:
         self.hub.set_meta(
             display_root(self.root, self.home), read_branch(self.root)
         )
+
+    async def publish_status(self) -> None:
+        """Publish the working tree's pending changes for the *current* root.
+
+        ``self.root`` is read at the moment of the call, exactly like
+        :meth:`publish_meta`: a captured root would keep the panel listing the
+        changes of a project nobody is watching, overwriting it seconds after
+        every ``ctrl+L`` switch.
+
+        The in-flight flag is not read here -- this always runs -- but is kept
+        for :meth:`poll_status`, so a round started by a switch is visible to the
+        timer and not doubled by it.
+        """
+        self._status_busy = True
+        try:
+            entries = await git_status(self.root)
+        finally:
+            self._status_busy = False
+        self.hub.set_status(status_frame(entries))
 
     # -- the switch --------------------------------------------------------
 
@@ -497,6 +560,10 @@ class Session:
         LOGGER.info("observing %s (%d files)", resolved, len(seeded))
 
         self.start_watcher()
+        # Not left to the poll: the panel would otherwise spend up to three
+        # seconds empty (the reset cleared it) or, worse if it survived, listing
+        # paths that do not exist under the new root.
+        await self.publish_status()
         return None
 
     # -- background --------------------------------------------------------
@@ -514,6 +581,28 @@ class Session:
         while True:
             await asyncio.sleep(interval)
             self.publish_meta()
+
+    async def poll_status(self, interval: float = STATUS_POLL_INTERVAL_SECONDS) -> None:
+        """Keep the git-status panel honest, in a task of its own.
+
+        Separate from :meth:`poll_repo` because the two cost wildly different
+        things: the branch is one small file read, this forks `git status` over
+        the whole working tree. Sharing a loop would slow the caption to this
+        rhythm, and a slow status would delay the branch.
+
+        A round is skipped while another is still in flight. `git status` on a
+        large repository can outlast the interval, and stacking rounds would fork
+        one `git` per tick until the machine gives up.
+
+        Like :meth:`poll_repo`, this reads the root at call time, and
+        `set_status` filters out unchanged answers, so the loop itself stays
+        dumb.
+        """
+        while True:
+            await asyncio.sleep(interval)
+            if self._status_busy:
+                continue
+            await self.publish_status()
 
     # -- inbound commands --------------------------------------------------
 
@@ -735,6 +824,30 @@ def _start_watcher(hub: EventHub, project_root: str):
     return watcher
 
 
+def _status_poll_interval() -> float:
+    """How often to re-read the working tree, from the environment.
+
+    ``GRAPHAGENTS_STATUS_INTERVAL`` is an escape hatch, not a tuning knob: on a
+    huge repository on a slow disk `git status` is expensive enough that somebody
+    watching may want it rarer, or off entirely. Zero or negative means off, and
+    then no task is created at all -- a loop that only sleeps is still a loop to
+    reason about. Garbage falls back to the default rather than crashing the
+    daemon at boot over a typo.
+    """
+    raw = os.environ.get("GRAPHAGENTS_STATUS_INTERVAL", "").strip()
+    if not raw:
+        return STATUS_POLL_INTERVAL_SECONDS
+    try:
+        return float(raw)
+    except ValueError:
+        LOGGER.warning(
+            "GRAPHAGENTS_STATUS_INTERVAL=%r is not a number; using %.1fs",
+            raw,
+            STATUS_POLL_INTERVAL_SECONDS,
+        )
+        return STATUS_POLL_INTERVAL_SECONDS
+
+
 async def run(
     socket_path: str,
     http_port: int,
@@ -743,9 +856,11 @@ async def run(
     session = Session(project_root=project_root, home=os.path.expanduser("~"))
     hub = session.hub
 
-    # Caption and seed before the listener opens, so the first client to connect
-    # already finds a captioned tree in the replay rather than an empty field.
+    # Caption, status and seed before the listener opens, so the first client to
+    # connect already finds a captioned tree with its panel in the replay rather
+    # than an empty field that fills in over the next few seconds.
     session.publish_meta()
+    await session.publish_status()
     seeded = scan_tree(session.root)
     hub.seed_paths(seeded)
     LOGGER.info("seeded %d existing files from %s", len(seeded), session.root)
@@ -759,6 +874,13 @@ async def run(
 
     session.start_watcher()
     repo_poll = asyncio.create_task(session.poll_repo())
+
+    status_interval = _status_poll_interval()
+    status_poll = (
+        asyncio.create_task(session.poll_status(status_interval))
+        if status_interval > 0
+        else None
+    )
 
     static_root: Path | None = WEB_DIST if WEB_DIST.is_dir() else None
     if static_root is None:
@@ -789,9 +911,12 @@ async def run(
             with contextlib.suppress(asyncio.CancelledError):
                 await stop
     finally:
-        repo_poll.cancel()
-        with contextlib.suppress(asyncio.CancelledError):
-            await repo_poll
+        for task in (repo_poll, status_poll):
+            if task is None:
+                continue
+            task.cancel()
+            with contextlib.suppress(asyncio.CancelledError):
+                await task
         session.stop()
     with contextlib.suppress(FileNotFoundError):
         os.unlink(socket_path)

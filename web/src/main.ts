@@ -27,6 +27,7 @@ import {
   type RootPromptState,
 } from "./rootPrompt";
 import { createFileViewHud } from "./fileViewHud";
+import { createStatusHud } from "./statusHud";
 import { interpretFileViewKey } from "./fileViewKeys";
 import {
   applyView,
@@ -51,16 +52,25 @@ function boot(): void {
   if (!canvas) throw new Error("missing #stage canvas");
 
   const sim = createSimulation();
+
+  /**
+   * Show a file's contents, whichever way it was asked for.
+   *
+   * The browser cannot read the disk, so this is a round trip; the answer comes
+   * back through `onFileView`. The panel opens now, in `loading`, or the click
+   * reads as one that missed and gets repeated. Shared by the two ways in — a
+   * dot in the graph and a row in the git status panel — so a status row opens
+   * exactly what clicking the same file in the graph opens.
+   */
+  function openFile(path: string): void {
+    client.send({ kind: "file", path });
+    showFileView(requestView(fileView, path));
+  }
+
   const renderer = createRenderer(canvas, sim, {
     // The renderer reports which file was clicked and stops there; asking the
     // daemon for it and opening the panel is this layer's job.
-    onFileClick: (path) => {
-      // The browser cannot read the disk, so this is a round trip; the answer
-      // comes back through `onFileView`. The panel opens now, in `loading`, or
-      // the click reads as one that missed and gets repeated.
-      client.send({ kind: "file", path });
-      showFileView(requestView(fileView, path));
-    },
+    onFileClick: openFile,
   });
   const contextEl = document.getElementById("context");
   const contextHud = contextEl ? createContextHud(contextEl) : null;
@@ -75,6 +85,8 @@ function boot(): void {
   const rootHud = rootEl ? createRootHud(rootEl) : null;
   const fileViewEl = document.getElementById("file-view");
   const fileViewHud = fileViewEl ? createFileViewHud(fileViewEl) : null;
+  const statusEl = document.getElementById("status");
+  const statusHud = statusEl ? createStatusHud(statusEl, openFile) : null;
 
   // The search's whole state machine is in `search.ts`; this is just the one
   // variable holding the state it returns, and the wiring that shows it.
@@ -157,12 +169,18 @@ function boot(): void {
       // still the one being waited for -- the user may have clicked elsewhere,
       // or closed the panel, while it travelled -- so nothing here inspects it.
       onFileView: (view) => showFileView(applyView(fileView, view)),
+      // What is uncommitted right now. The frame is deduped by the daemon, so
+      // this only fires when the working tree really changed.
+      onStatus: (status) => statusHud?.render(status),
       onReset: () => {
         // The root changed: everything on screen belongs to the old project and
         // the new tree is already on its way.
         sim.reset();
         renderer.resetScene();
         eventHud?.clear();
+        // The rows name files of the old project, and the new root's status is
+        // already on its way.
+        statusHud?.clear();
         // The open file was a file of the old project: its contents are now
         // about a path nobody is looking at.
         showFileView(closeView(fileView));

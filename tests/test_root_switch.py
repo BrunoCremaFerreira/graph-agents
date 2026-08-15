@@ -386,7 +386,63 @@ def test_seeding_the_new_root_does_not_block_the_event_loop(
     _run(scenario())
 
 
-# --- 5. The branch poll reads the current root ------------------------------
+# --- 5. The status panel is republished by the switch -----------------------
+
+def test_the_switch_publishes_the_status_of_the_new_project(tmp_path: Path, make_session):
+    # Left to the poll alone, the panel spends up to three seconds listing the
+    # pending changes of the project that was just abandoned -- paths that do not
+    # exist under the new root, so clicking one is refused.
+    async def scenario():
+        old = _project(tmp_path / "old", "old_only.py")
+        new = _project(tmp_path / "new", "new_only.py")
+        session = make_session(old, tmp_path)
+
+        await session.switch_root(str(new))
+
+        assert _last(session, "status") is not None
+
+    _run(scenario())
+
+
+def test_the_status_published_by_the_switch_is_the_new_roots(
+    tmp_path: Path, make_session, monkeypatch
+):
+    asked: list[str] = []
+
+    async def fake_status(root, *args, **kwargs):
+        asked.append(str(root))
+        return None
+
+    monkeypatch.setattr(server, "git_status", fake_status, raising=False)
+
+    async def scenario():
+        old = _project(tmp_path / "old")
+        new = _project(tmp_path / "new")
+        session = make_session(old, tmp_path)
+
+        await session.switch_root(str(new))
+
+        assert asked and asked[-1] == str(new)
+
+    _run(scenario())
+
+
+def test_a_plain_directory_is_published_as_having_no_repository(
+    tmp_path: Path, make_session
+):
+    async def scenario():
+        old = _project(tmp_path / "old")
+        new = _project(tmp_path / "new", "a.py")
+        session = make_session(old, tmp_path)
+
+        await session.switch_root(str(new))
+
+        assert (_last(session, "status") or {}).get("repo") is False
+
+    _run(scenario())
+
+
+# --- 6. The branch poll reads the current root ------------------------------
 
 def test_the_branch_poll_follows_the_root_that_is_on_screen_now(
     tmp_path: Path, make_session

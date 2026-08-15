@@ -274,6 +274,60 @@ def test_the_hex_dump_is_what_the_panel_gets_as_content(tmp_path: Path):
     assert content.startswith("00000000: 8950 4e47")
 
 
+def test_a_deleted_file_is_shown_as_the_diff_of_its_removal(tmp_path: Path):
+    # The order used to be "missing -> error" *before* the diff, which made the
+    # one file the status panel most wants to offer -- a deletion -- unopenable:
+    # clicking it answered "no such file" while `git diff HEAD` had the whole
+    # removed content to show. Existence is now only asked about once git has
+    # said it knows nothing either.
+    root = _repo(tmp_path / "proj", {"a.txt": b"old\n"})
+    (root / "a.txt").unlink()
+
+    assert _run(file_view(str(root), "a.txt"))["mode"] == "diff"
+
+
+def test_the_removed_lines_are_what_the_panel_gets_for_a_deleted_file(tmp_path: Path):
+    root = _repo(tmp_path / "proj", {"a.txt": b"old\n"})
+    (root / "a.txt").unlink()
+
+    content = _run(file_view(str(root), "a.txt"))["content"]
+
+    assert "-old" in content
+
+
+def test_a_deleted_file_answers_without_an_error(tmp_path: Path):
+    root = _repo(tmp_path / "proj", {"src/app.ts": b"x\n"})
+    (root / "src" / "app.ts").unlink()
+
+    assert not _run(file_view(str(root), "src/app.ts"))["error"]
+
+
+def test_a_path_that_never_existed_in_a_repository_still_errors(tmp_path: Path):
+    # git has nothing to say about it either, so the fallback is unchanged.
+    root = _repo(tmp_path / "proj", {"a.txt": b"old\n"})
+
+    assert _run(file_view(str(root), "never-there.txt"))["error"]
+
+
+def test_a_missing_file_outside_a_repository_still_errors(tmp_path: Path):
+    # The pre-existing contract, now reached one step later in the order.
+    root = _project(tmp_path / "proj", {"a.txt": b"hello\n"})
+
+    answer = _run(file_view(str(root), "gone.txt"))
+
+    assert answer["error"] and answer["mode"] == "error" and answer["content"] == ""
+
+
+def test_a_directory_is_refused_before_git_is_ever_asked(tmp_path: Path):
+    # `git diff HEAD -- src` happily produces a diff for a whole directory; the
+    # directory check has to keep coming first, or clicking a folder opens the
+    # combined diff of everything under it.
+    root = _repo(tmp_path / "proj", {"src/app.ts": b"old\n"})
+    (root / "src" / "app.ts").write_text("changed\n", encoding="utf-8")
+
+    assert _run(file_view(str(root), "src"))["error"]
+
+
 def test_a_modified_binary_still_prefers_its_diff(tmp_path: Path):
     # The order is fixed: the viewer clicked to ask what the agent did to this
     # file, and "Binary files differ" answers that better than the new bytes.

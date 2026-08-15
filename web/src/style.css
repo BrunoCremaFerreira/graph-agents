@@ -286,6 +286,120 @@ body {
 }
 
 /*
+ * Uncommitted changes, bottom RIGHT — the one corner still free: #hud owns the
+ * left (40vw), #context the centre (50vw), so 32vw here cannot reach either.
+ * `pointer-events: auto` is required rather than cosmetic: the rows are clicked
+ * to open a file and the list is scrolled. Same greys and typography as #hud,
+ * and the scrollbar is hidden — but the mask is NOT #log's. There the fade is
+ * proportional (60%) because what dims is old history nobody will click. Here
+ * every row is a click target, and a proportional mask is relative to the
+ * element's own box, so even a two-line list would show its last line half
+ * erased, permanently. Only the last 24px fade: enough to signal "there is more
+ * below" while scrolling, and no fade at all worth noticing on a short list.
+ */
+#status {
+  position: fixed;
+  right: 12px;
+  bottom: 10px;
+  display: flex;
+  flex-direction: column;
+  align-items: flex-end;
+  max-width: 32vw;
+  max-height: 40vh;
+  overflow-y: auto;
+  overflow-x: hidden;
+  color: #8a8f98;
+  font: 12px/1.4 system-ui, sans-serif;
+  pointer-events: auto;
+  user-select: none;
+  scrollbar-width: none;
+  -webkit-mask-image: linear-gradient(to bottom, #000 calc(100% - 24px), transparent);
+  mask-image: linear-gradient(to bottom, #000 calc(100% - 24px), transparent);
+}
+
+/*
+ * The `display: flex` above would otherwise override the `hidden` attribute and
+ * leave the panel on screen over a clean tree for good — the same trap as
+ * #context-branch, #search, #root-bar and #file-view.
+ */
+#status[hidden] {
+  display: none;
+}
+
+#status::-webkit-scrollbar {
+  display: none;
+}
+
+#status .head {
+  align-self: stretch;
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+  margin-bottom: 4px;
+  color: #5c6067;
+  white-space: nowrap;
+}
+
+#status #status-list {
+  align-self: stretch;
+  list-style: none;
+  margin: 0;
+  padding: 0;
+}
+
+#status li {
+  display: flex;
+  align-items: baseline;
+  justify-content: flex-end;
+  white-space: nowrap;
+  cursor: pointer;
+}
+
+/* The row answers the pointer without becoming a button. */
+#status li:hover .name,
+#status li:hover .dir {
+  color: #d5d9df;
+}
+
+/* The glyph is the only coloured thing here, as in #log. */
+#status .op {
+  flex: 0 0 auto;
+  width: 0.9em;
+  color: #5c6067;
+}
+
+#status .op.a {
+  color: #33ff33;
+}
+
+#status .op.m {
+  color: #ffaa00;
+}
+
+#status .op.d {
+  color: #ff3333;
+}
+
+/* Untracked is not an operation anyone performed: it stays dead grey. */
+#status .op.u {
+  color: #5c6067;
+}
+
+/* The directory is what gets clipped when a path is too long; the name stays. */
+#status .dir {
+  flex: 0 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  color: #5c6067;
+}
+
+#status .name {
+  flex: 0 0 auto;
+  color: #8a8f98;
+}
+
+/*
  * File viewer, centred and modal: the diff/text/hex of the file that was
  * clicked. `pointer-events: auto` is required — the body is scrolled and the
  * backdrop is clicked — and the panel deliberately covers the graph: it is read,

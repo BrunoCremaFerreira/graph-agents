@@ -17,6 +17,14 @@ Design constraints these tests pin down:
     `.git` is a *file* pointing elsewhere (absolute or relative), and an
     observed directory that is a *subfolder* of the repository.
 
+`find_checkout_root` (section 5) answers a different question from
+`resolve_git_dir`: not "where is the git *directory*" but "where is the top of
+the *checkout*". The git-status panel needs the second one -- `git status`
+reports paths relative to the top of the working tree, so turning them into the
+paths the graph draws requires knowing where that top is. The two answers differ
+for every worktree and submodule, where the `.git` directory lives somewhere else
+entirely.
+
 Style: Arrange-Act-Assert, one failure reason per test.
 """
 
@@ -29,6 +37,11 @@ from pathlib import Path
 
 import pytest
 
+# Section 5 reaches `find_checkout_root` through the module rather than importing
+# the name: while it does not exist yet, a missing name in this import would
+# collapse the twenty tests above into a collection error instead of leaving
+# them green.
+from graphagents import repo
 from graphagents.repo import display_root, parse_head, read_branch, resolve_git_dir
 
 
@@ -215,3 +228,93 @@ def test_a_path_outside_home_is_returned_unchanged():
 
 def test_an_empty_home_leaves_the_path_intact():
     assert display_root("/home/brn/projects/x", "") == "/home/brn/projects/x"
+
+
+# --- 5. find_checkout_root: the top of the working tree --------------------
+
+def test_finds_the_checkout_root_of_a_plain_repository(tmp_path: Path):
+    # The directory that *contains* `.git`, never `.git` itself: `git status`
+    # reports `src/app.py`, and joining that onto `.git/` points at nothing.
+    _plain_repo(tmp_path)
+
+    assert _same_dir(repo.find_checkout_root(str(tmp_path)), tmp_path)
+
+
+def test_the_checkout_root_is_not_the_git_directory(tmp_path: Path):
+    # The distinction the whole function exists for.
+    _plain_repo(tmp_path)
+
+    found = repo.find_checkout_root(str(tmp_path))
+
+    assert found is not None and not found.rstrip("/").endswith(".git")
+
+
+def test_a_deep_subdirectory_still_reports_the_top_of_the_checkout(tmp_path: Path):
+    # The observed root is often `repo/web/src`; git's paths are relative to
+    # `repo`, so the panel cannot rebase them without this answer.
+    _plain_repo(tmp_path)
+    nested = tmp_path / "web" / "src" / "deep"
+    nested.mkdir(parents=True)
+
+    assert _same_dir(repo.find_checkout_root(str(nested)), tmp_path)
+
+
+def test_a_dot_git_file_makes_its_own_directory_the_checkout_root(tmp_path: Path):
+    # A worktree or submodule: the git directory is elsewhere, but the working
+    # tree -- the thing paths are relative to -- is right here.
+    real_git = tmp_path / "store" / "wt"
+    real_git.mkdir(parents=True)
+    (real_git / "HEAD").write_text("ref: refs/heads/wt\n", encoding="utf-8")
+    worktree = tmp_path / "wt"
+    worktree.mkdir()
+    (worktree / ".git").write_text(f"gitdir: {real_git}\n", encoding="utf-8")
+
+    assert _same_dir(repo.find_checkout_root(str(worktree)), worktree)
+
+
+def test_a_subdirectory_of_a_worktree_reports_the_worktree(tmp_path: Path):
+    real_git = tmp_path / "store" / "wt"
+    real_git.mkdir(parents=True)
+    (real_git / "HEAD").write_text("ref: refs/heads/wt\n", encoding="utf-8")
+    worktree = tmp_path / "wt"
+    (worktree / "src").mkdir(parents=True)
+    (worktree / ".git").write_text(f"gitdir: {real_git}\n", encoding="utf-8")
+
+    assert _same_dir(repo.find_checkout_root(str(worktree / "src")), worktree)
+
+
+def test_a_directory_outside_any_repository_has_no_checkout_root(tmp_path: Path):
+    plain = tmp_path / "not-a-repo"
+    plain.mkdir()
+
+    assert repo.find_checkout_root(str(plain)) is None
+
+
+def test_a_path_that_does_not_exist_yields_none_instead_of_raising(tmp_path: Path):
+    # The observed root can be deleted while the poll is still asking about it.
+    assert repo.find_checkout_root(str(tmp_path / "vanished" / "deeper")) is None
+
+
+def test_the_checkout_root_is_absolute(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
+    # It is handed to `relativize` alongside the observed root; a relative answer
+    # would never match and would silently drop every entry.
+    _plain_repo(tmp_path)
+    monkeypatch.chdir(tmp_path)
+
+    found = repo.find_checkout_root(".")
+
+    assert found is not None and os.path.isabs(found)
+
+
+def test_the_upward_search_for_a_checkout_stops_at_the_filesystem_root():
+    # A naive `while True: path = dirname(path)` never terminates at "/".
+    result: list[str | None] = []
+    worker = threading.Thread(
+        target=lambda: result.append(repo.find_checkout_root("/")), daemon=True
+    )
+
+    worker.start()
+    worker.join(timeout=5)
+
+    assert not worker.is_alive(), "find_checkout_root looped forever walking up from /"
+    assert result == [None]

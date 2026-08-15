@@ -12,7 +12,10 @@
     "test:watch": "vitest"
   },
   "dependencies": {
+    "@shikijs/langs": "^3.23.0",
+    "@shikijs/themes": "^3.23.0",
     "d3-force": "^3.0.0",
+    "shiki": "^3.23.0",
     "three": "^0.160.0"
   },
   "devDependencies": {

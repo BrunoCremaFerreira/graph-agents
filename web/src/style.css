@@ -440,9 +440,28 @@ body {
   min-height: 0;
   border: 1px solid #2a2e34;
   border-radius: 6px;
-  background: rgba(12, 13, 15, 0.96);
-  color: #d5d9df;
+  /* The editor background of Dark+ itself (#1F1F1F is Dark Modern, another
+   * theme): the tokens below are that theme's, and they were chosen against
+   * this colour. */
+  background: #1e1e1e;
+  color: #d4d4d4;
   font: 12px/1.4 system-ui, sans-serif;
+
+  /* The diff's palette. The stripes are translucent so a token stays readable
+   * on top of them: the worst case is the comment green #6A9955 at ~3.8:1, and
+   * everything else clears 5:1. */
+  --diff-add-bg: rgba(63, 185, 80, 0.16);
+  --diff-add-sign: #3fb950;
+  --diff-del-bg: rgba(248, 81, 73, 0.16);
+  --diff-del-sign: #f85149;
+  --diff-hunk-bg: rgba(86, 156, 214, 0.1);
+  --diff-hunk-fg: #569cd6;
+  --diff-meta-fg: #6e7681;
+  --gutter-fg: #6e7681;
+  --gutter-bg: rgba(255, 255, 255, 0.02);
+  /* Overwritten per paint by fileViewHud; this is only the width before the
+   * first document arrives. */
+  --gutter-ch: 1ch;
 }
 
 #file-view #file-view-head {
@@ -452,6 +471,7 @@ body {
   gap: 10px;
   padding: 8px 12px;
   border-bottom: 1px solid #2a2e34;
+  background: #252526;
   white-space: nowrap;
   user-select: none;
 }
@@ -466,6 +486,12 @@ body {
 }
 
 #file-view #file-view-mode {
+  flex: 0 0 auto;
+  color: #5c6067;
+}
+
+/* Which grammar coloured the body, and — past the budget — that none did. */
+#file-view #file-view-lang {
   flex: 0 0 auto;
   color: #5c6067;
 }
@@ -496,26 +522,98 @@ body {
   margin: 0;
   padding: 10px 12px;
   overflow: auto;
-  color: #b3b8c1;
+  background: #1e1e1e;
+  color: #d4d4d4;
   font: 12px/1.45 ui-monospace, "SF Mono", Menlo, Consolas, monospace;
   white-space: pre-wrap;
   overflow-wrap: anywhere;
   tab-size: 4;
 }
 
+/*
+ * With rows, the horizontal padding moves INSIDE them: a stripe that stops
+ * 12 px short of the edge reads as a box rather than as a changed line.
+ */
+#file-view #file-view-body.rows {
+  padding: 8px 0;
+  /* Wrapping is the `.code` cell's business alone; here it would break the
+   * grid's own whitespace. */
+  white-space: normal;
+}
+
 #file-view #file-view-body.error {
   color: #d98b8b;
 }
 
-/* The diff's three line kinds — the only decoration in the panel. */
-#file-view #file-view-body .add {
-  color: #7ee787;
+/*
+ * One grid per line, so a wrapped continuation lands under the code and not
+ * under the line numbers. The two gutter tracks are one character wider than
+ * the widest number they hold, which is the space between the two columns; the
+ * sign is a single character, and the code takes the rest.
+ */
+#file-view #file-view-body .row {
+  display: grid;
+  grid-template-columns:
+    calc(var(--gutter-ch) + 1ch) calc(var(--gutter-ch) + 1ch)
+    1ch 1fr;
+  padding-left: 12px;
+  /* An empty line keeps the height of a full one; nothing is smuggled into its
+   * text to hold it open. */
+  min-height: 1.45em;
 }
 
-#file-view #file-view-body .del {
-  color: #f0796a;
+/* Line numbers: dim, right-aligned, and never part of a copied selection. */
+#file-view #file-view-body .row > .old,
+#file-view #file-view-body .row > .new {
+  box-sizing: border-box;
+  padding-right: 1ch;
+  overflow: hidden;
+  color: var(--gutter-fg);
+  background: var(--gutter-bg);
+  text-align: right;
+  user-select: none;
 }
 
-#file-view #file-view-body .hunk {
-  color: #79a8ff;
+#file-view #file-view-body .row > .sign {
+  user-select: none;
+}
+
+/* The only cell that wraps, and the only one whose content came from a file. */
+#file-view #file-view-body .row > .code {
+  padding-right: 12px;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
+/*
+ * The stripe covers the sign and the code, NOT the gutter — the same choice
+ * VS Code's diff editor makes: a striped line number fights the reading.
+ */
+#file-view #file-view-body .row.add > .sign,
+#file-view #file-view-body .row.add > .code {
+  background: var(--diff-add-bg);
+}
+
+#file-view #file-view-body .row.add > .sign {
+  color: var(--diff-add-sign);
+}
+
+#file-view #file-view-body .row.del > .sign,
+#file-view #file-view-body .row.del > .code {
+  background: var(--diff-del-bg);
+}
+
+#file-view #file-view-body .row.del > .sign {
+  color: var(--diff-del-sign);
+}
+
+#file-view #file-view-body .row.hunk > .sign,
+#file-view #file-view-body .row.hunk > .code {
+  background: var(--diff-hunk-bg);
+  color: var(--diff-hunk-fg);
+}
+
+/* The preamble and the annotations: present, and out of the way. */
+#file-view #file-view-body .row.meta > .code {
+  color: var(--diff-meta-fg);
 }

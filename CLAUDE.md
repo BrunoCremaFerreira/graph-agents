@@ -109,7 +109,11 @@ web/src/search.ts         # pure: match, the walk over matches, and the camera f
 web/src/rootPrompt.ts     # pure: the ctrl+L bar's state (text, completion, discard on Esc)
 web/src/pick.ts           # pure: which file a click (or the resting pointer) landed on
 web/src/labels.ts         # pure: label size/placement, and which files are named this frame
-web/src/fileView.ts       # pure: the content panel's state (request, adopt, discard)
+web/src/fileView.ts       # pure: the content panel's state (request, adopt, discard, tokens)
+web/src/language.ts       # pure: path -> the grammar id, or null (no generic fallback)
+web/src/diffModel.ts      # pure: the unified diff, parsed into numbered rows
+web/src/fileDoc.ts        # pure: what the panel draws — rows, gutter, tokenize requests
+web/src/highlight.ts      # the ONE place that names shiki (lazy wasm + 22 literal imports)
 web/src/statusList.ts     # pure: the uncommitted-changes panel (order, cap, is it visible)
 web/src/searchKeys.ts     # pure: what ctrl+F / F3 / Esc mean
 web/src/*Hud.ts           # thin DOM painters: context caption, event list, attribution, search
@@ -173,7 +177,7 @@ asking the tester for the RED tests, not by asking a developer to implement blin
 
 Web MVP implemented and verified end-to-end (TDD).
 
-- **Backend** (`graphagents/`, `hooks/`, `daemon/`): 464/464 pytest green. Hook is stdlib-only
+- **Backend** (`graphagents/`, `hooks/`, `daemon/`): 503/503 pytest green. Hook is stdlib-only
   and exits 0 on garbage input. Daemon seeds the project tree at boot, ingests hook events on
   a Unix socket, watches the filesystem, and serves `web/dist` over HTTP **and** broadcasts
   events over WebSocket (`/ws`) on a single port (`:8080`) — one forwarded port is enough for
@@ -197,7 +201,45 @@ Web MVP implemented and verified end-to-end (TDD).
   a hand-written spec. Two defences apply because the path arrives from the network:
   `resolve_inside` refuses anything resolving outside the observed root (symlinks included),
   and the content is capped at 256 KiB, flagged `truncated`, because it crosses the WebSocket
-  whole.
+  whole. **Caveat, unfixed:** that cap is on the text/hex path only — `mode: "diff"` returns
+  `git diff` output with no cap at all, so a regenerated dump crosses whole. `MAX_ROWS` bounds
+  what the browser draws; the frame itself is still unbounded.
+- **The panel colours what it shows, with VS Code's own palette.** Not an imitation: `shiki`
+  carries the real TextMate grammars and the Dark+ theme, so `#569CD6` on a keyword is the
+  colour VS Code would paint. Five things are load-bearing:
+  - **The whole engine is lazy.** `highlight.ts` is reached by `await import("./highlight")` on
+    the first file opened, so the entry chunk is unchanged (measured: +5 KB, and `grep -c
+    shikijs dist/assets/index-*.js` is 0). Each grammar is its own chunk.
+  - **The 22 language imports must be written as literal arrows.** `` import(`@shikijs/langs/${id}`) ``
+    does not work — Vite's dynamic-import-vars plugin cannot glob a bare specifier into
+    `node_modules`, and it either fails the build or drags all 346 grammars (~15 MB) into
+    `dist`. Typing the table as `Record<LanguageId, Loader>` makes tsc prove it stays in step
+    with `language.ts`.
+  - **The engine is oniguruma (WASM), and that was measured, not assumed.** The JavaScript
+    RegExp engine is ~10× smaller and its docs claim full coverage, but on these 22 grammars it
+    diverges on two, and is wrong on both: in C++ a trailing `// c` never becomes a comment, and
+    in HTML the embedded `<script>`/`<style>` handling collapses. `forgiving: true` swallows the
+    pattern silently. Re-measure before switching.
+  - **A diff is tokenized one fragment per hunk per side**, never as two concatenated documents:
+    hunks are not contiguous, so joining them invents adjacency, and one unterminated string in
+    an early hunk would poison every later one. A context line is present in the *old* fragment
+    so the grammar sees coherent code, but its row index there is `-1` — it is painted from the
+    *new* side. `code.split("\n").length === rows.length` is the invariant that holds it
+    together. The residual cost is inherent to diffs: a hunk that opens inside a block comment
+    tokenizes its first lines out of context, exactly as it does on GitHub.
+  - **No shiki outside `highlight.ts`, not even `import type`.** That is what keeps the suite
+    mock-free, jsdom-free and fast; `CodeToken` is ours, and `highlight.ts` renames shiki's
+    `.content` to `.text` and resolves the optional colour on the way through.
+  Budget: 4 000 lines / 128 KiB to colour, 20 000 rows before the panel falls back to today's
+  single text node. Over budget the diff keeps its rows, stripes and gutter and loses only the
+  colour, and the header says so. Unknown extension → plain, deliberately: no generic lexer.
+- **The diff reads like the CLI now.** Old/new line-number gutter, a full-width stripe on the
+  row (`rgba(63,185,80,.16)` / `rgba(248,81,73,.16)` — translucent so the tokens stay legible on
+  top), and the syntax coloured over it. Three details: the stripe covers sign + code but *not*
+  the gutter, because banded line numbers are harder to scan; `user-select: none` on the gutter,
+  or copying a snippet takes the numbers with it; and `--- a/x` / `+++ b/x` are `meta`,
+  classified before the `+`/`-` rules — the old `diffLineClass` coloured them as del/add, which
+  with a gutter would have handed them line numbers.
 - **Two callers fork `git`, through one runner.** `graphagents/gitcmd.py` owns the fork itself
   and `diff.py`/`status.py` own the argv and the parsing. The "files, never `subprocess`" rule
   in `repo.py` is about the branch poll, and it still holds there: the branch is a dozen bytes
@@ -235,7 +277,10 @@ Web MVP implemented and verified end-to-end (TDD).
   The listener binds every interface, so without the gate anyone who can reach `:8080` could
   list the host's directories and repoint the graph. SSH and VS Code forwarding arrive as
   loopback, so the ordinary remote setup is unaffected.
-- **Frontend** (`web/`): 782/782 vitest green, `tsc` + `vite build` clean. Gource-style WebGL
+- **Frontend** (`web/`): 901/901 vitest green, `tsc` + `vite build` clean. `shiki` (pinned to
+  3.23.0 — 4.x needs Node ≥ 20 and this machine has 18) is the first runtime dependency added
+  since `d3-force`; note that `npm install` under npm 10 strips the `libc` fields from
+  `package-lock.json`, so check `git diff` on the lock after touching dependencies. Gource-style WebGL
   renderer (three.js force layout + `UnrealBloomPass` + per-agent figure and beams), pure
   `simulation.ts` model, typed `parseEvent`, auto-reconnecting `wsClient.ts`. Label placement
   lives in pure `labels.ts` (like `view.ts`) because `renderer.ts` needs a GL context and
@@ -299,9 +344,16 @@ Web MVP implemented and verified end-to-end (TDD).
   removal; committing everything empties the list (`repo: true`, no entries); switching the
   root to a subdirectory relativizes the paths to it and drops what is outside; a root outside
   any repository answers `repo: false`.
-  **Not yet verified:** the actual in-browser visual (this host has no Chrome, and a headless
-  screenshot of an animated force layout proves nothing) — including whether the new
-  bottom-right panel clears `#context` and `#hud` at narrow window widths.
+  For the highlighter, the boundary that no unit test reaches was driven end to end outside the
+  browser instead: the real `buildDoc → highlightChunks → applyTokens → buildDoc` path, over a
+  real file and a real `git diff` from this repo, rendered both as ANSI and as HTML against the
+  shipped stylesheet. That confirmed the Dark+ colours, the stripes, the numbering across
+  hunks, italic/bold, and that an unknown extension still gets a gutter.
+  **Not yet verified:** the actual in-browser visual (this host has no Chrome — no chromium, no
+  playwright, no selenium — and a headless screenshot of an animated force layout proves
+  nothing). Outstanding: whether the bottom-right status panel clears `#context` and `#hud` at
+  narrow window widths, and, for the viewer, the gutter's alignment on *wrapped* lines, the new
+  `#file-view-lang` span at narrow widths, and how the stripes read on a real monitor.
 
 Run: `GRAPHAGENTS_PROJECT_ROOT=/path/to/observed ./start.sh`. Point the root at the project
 you want to *watch*, not at `graph-agents` — or start anywhere and switch with `ctrl+L` in the

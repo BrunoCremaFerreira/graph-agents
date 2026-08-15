@@ -30,12 +30,14 @@ import { createFileViewHud } from "./fileViewHud";
 import { createStatusHud } from "./statusHud";
 import { interpretFileViewKey } from "./fileViewKeys";
 import {
+  applyTokens,
   applyView,
   closeView,
   createFileView,
   requestView,
   type FileViewState,
 } from "./fileView";
+import { buildDoc } from "./fileDoc";
 import {
   activePath,
   closeSearch,
@@ -125,7 +127,19 @@ function boot(): void {
   // returned and paints it.
   let fileView: FileViewState = createFileView();
 
-  function showFileView(next: FileViewState): void {
+  /**
+   * Paint the panel, and colour it when there is colour to be had.
+   *
+   * The document is built once per paint (`fileDoc.ts` decides everything about
+   * it, including whether the file is worth tokenizing at all), and the
+   * highlighter is a dynamic import: the wasm engine and the grammar are
+   * downloaded by the first file that needs them and never by the page.
+   *
+   * `keepScroll` belongs to exactly one caller — the repaint below, which adds
+   * colour to text already on screen and must not throw the reader back to
+   * line 1. Everything else is a new file, which starts at its first line.
+   */
+  function showFileView(next: FileViewState, keepScroll = false): void {
     fileView = next;
     if (!fileView.open) {
       fileViewHud?.close();
@@ -134,9 +148,28 @@ function boot(): void {
       renderer.setOpenFile(null);
       return;
     }
+    const doc = buildDoc(fileView);
     fileViewHud?.open();
-    fileViewHud?.render(fileView);
+    fileViewHud?.render(fileView, doc, keepScroll);
     renderer.setOpenFile(fileView.path);
+
+    // Already coloured, or nothing to colour. The first half is what stops the
+    // repaint below from asking again — and again.
+    if (fileView.highlight !== null || doc.requests.length === 0) return;
+    // The content the tokens will describe, captured before the round trip:
+    // `applyTokens` compares against it and refuses everything stale.
+    const forContent = fileView.content;
+    void import("./highlight")
+      .then(({ highlightChunks }) => highlightChunks(doc.lang, doc.requests))
+      .then((chunks) => {
+        if (!chunks) return;
+        const coloured = applyTokens(fileView, forContent, chunks);
+        // Refusal returns the same reference, so this is the whole adoption test.
+        if (coloured !== fileView) showFileView(coloured, true);
+      })
+      // No colour is an acceptable degradation; nothing about it reaches the
+      // screen, and the file is already readable without it.
+      .catch(() => {});
   }
 
   const client = createWsClient(

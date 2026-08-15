@@ -16,6 +16,26 @@
 
 import type { FileView, FileViewMode } from "./protocol";
 
+/**
+ * One run of characters sharing a colour, as the grammar saw it.
+ *
+ * Ours, not shiki's: no module outside {@link ./highlight} may name that
+ * library, not even as a type — that is what keeps the test suite free of a
+ * mock and of the wasm engine behind it.
+ */
+export interface CodeToken {
+  readonly text: string;
+  readonly color: string;
+  readonly italic: boolean;
+  readonly bold: boolean;
+}
+
+/** The tokens of one line. */
+export type CodeLine = readonly CodeToken[];
+
+/** The tokens of one tokenized fragment, a line at a time. */
+export type CodeChunk = readonly CodeLine[];
+
 export interface FileViewState {
   /** True while the panel covers the graph. */
   readonly open: boolean;
@@ -31,6 +51,12 @@ export interface FileViewState {
   readonly truncated: boolean;
   /** Why there is nothing to show, or `""`. */
   readonly error: string;
+  /**
+   * The syntax tokens of {@link content}, one chunk per requested fragment, or
+   * `null` while none have arrived. The invariant is in the wording: tokens in
+   * the state always describe the content in the state.
+   */
+  readonly highlight: readonly CodeChunk[] | null;
 }
 
 /** A closed panel: no file, nothing in flight, nothing to show. */
@@ -44,6 +70,7 @@ export function createFileView(): FileViewState {
     content: "",
     truncated: false,
     error: "",
+    highlight: null,
   };
 }
 
@@ -72,6 +99,10 @@ export function requestView(_state: FileViewState, path: string): FileViewState 
  *
  * A frame carrying a `reason` instead of content is still the answer, so it is
  * adopted as-is rather than leaving the panel open, done, and blank.
+ *
+ * The tokens go with the old content: colour describes the text it was computed
+ * from, and colour is a strict enhancement, so dropping it is always safe while
+ * keeping it is not.
  */
 export function applyView(state: FileViewState, frame: FileView): FileViewState {
   if (!state.open) return state;
@@ -84,7 +115,33 @@ export function applyView(state: FileViewState, frame: FileView): FileViewState 
     content: frame.content,
     truncated: frame.truncated,
     error: frame.error,
+    highlight: null,
   };
+}
+
+/**
+ * Adopt the tokens of a fragment set, if they still describe what is on screen.
+ *
+ * Tokenizing is asynchronous — the first file opened downloads a wasm engine and
+ * a grammar — so the answer can land after the user clicked something else,
+ * pressed Escape, or clicked the SAME file again. The guard is the CONTENT
+ * ITSELF rather than the path: it subsumes a path check (a different file has
+ * different text, and when it does not the tokens are identical anyway) and it
+ * catches what a path check cannot — a re-read of the same path while the first
+ * run was in flight. On the happy path `forContent` is the very string handed to
+ * the tokenizer, so the comparison is by reference and costs nothing.
+ *
+ * Refusal returns the SAME reference, the idiom {@link applyView} established:
+ * `if (next !== fileView)` is the caller's test for "was it adopted?".
+ */
+export function applyTokens(
+  state: FileViewState,
+  forContent: string,
+  chunks: readonly CodeChunk[],
+): FileViewState {
+  if (!state.open) return state;
+  if (forContent !== state.content) return state;
+  return { ...state, highlight: chunks };
 }
 
 /**

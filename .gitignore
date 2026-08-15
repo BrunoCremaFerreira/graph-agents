@@ -9,6 +9,7 @@ venv/
 # Node / web build
 node_modules/
 web/dist/
+.npm-bootstrap/
 
 # Claude Code: agents are project config and are committed; local permission
 # grants are personal and are not.

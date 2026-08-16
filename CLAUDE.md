@@ -203,6 +203,9 @@ Custom agents live in `.claude/agents/`:
 - **`developer-frontend`** — implements TypeScript under `web/` (three.js renderer, the
   pure model/layout/view/label modules, WebSocket client, UI).
 - **`developer-tester`** — writes tests only, **never** production code; drives development via TDD.
+- **`security-auditor`** — audits the network surface, the path defences, the `git` runner and
+  the hook; writes a report and a per-finding remediation plan. Writes **no** code, no tests,
+  no fixes — its plan names the module to change and the RED test that must come first.
 
 This project follows **Test-Driven Development**. The intended loop:
 
@@ -213,7 +216,9 @@ This project follows **Test-Driven Development**. The intended loop:
 
 Subagents don't call each other directly — the main session orchestrates the hand-off
 (tester produces the failing tests → developer implements to green). Start a new feature by
-asking the tester for the RED tests, not by asking a developer to implement blind.
+asking the tester for the RED tests, not by asking a developer to implement blind. A security
+finding enters the same loop rather than bypassing it: `security-auditor` reports, the tester
+turns each fix plan into a failing test, and a developer takes it green.
 
 ## Status
 

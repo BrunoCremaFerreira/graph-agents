@@ -77,6 +77,7 @@ from rhizome_graph.normalize import (
 from rhizome_graph.paths import complete_dir, resolve_root
 from rhizome_graph.repo import display_root, read_branch
 from rhizome_graph.status import git_status, status_frame
+from rhizome_graph.token import inject_token, token_from_env, token_matches
 from rhizome_graph.tree import scan_tree
 
 LOGGER = logging.getLogger("rhizome_graph.daemon")
@@ -444,6 +445,16 @@ def parse_command(raw: str) -> dict | None:
     The path is handed on exactly as typed: trimming and ``~`` expansion belong
     to :mod:`rhizome_graph.paths`, and the answer echoes this text back so the page
     can tell whether it still matches what the viewer has in the field.
+
+    Every command carries a ``token``, always the key and never its absence: a
+    frame that named none parses to the **empty** token, and anything that is not
+    a string -- ``null``, a number, an object -- collapses to the same empty
+    string. That keeps a hostile value away from ``hmac.compare_digest``, which
+    raises on most of them, and it leaves exactly one distinction for the gate to
+    make: the empty token, which
+    :func:`rhizome_graph.token.token_matches` always refuses, against one that
+    matches. Authorization itself is not done here -- it belongs to the gate,
+    which owes the browser a reason it can show.
     """
     try:
         payload = json.loads(raw)
@@ -455,7 +466,12 @@ def parse_command(raw: str) -> dict | None:
     path = payload.get("path")
     if kind not in COMMAND_KINDS or not isinstance(path, str):
         return None
-    return {"kind": kind, "path": path}
+    token = payload.get("token")
+    return {
+        "kind": kind,
+        "path": path,
+        "token": token if isinstance(token, str) else "",
+    }
 
 
 def control_allowed(remote_host: str, allow_remote: bool) -> bool:
@@ -504,10 +520,16 @@ class Session:
     ``home`` is a parameter rather than ``os.path.expanduser`` so the expansion
     of ``~`` -- both in the field and in the HUD caption -- is the caller's
     decision, and testable without a fixed ``$HOME``.
+
+    ``token`` is the secret every inbound command must carry, minted here
+    because the session is what a command drives. It is injected into the page
+    this daemon serves, so the page it belongs to can send it and nobody else
+    can (see :mod:`rhizome_graph.token`).
     """
 
     def __init__(self, project_root: str, home: str) -> None:
         self.home = home
+        self.token = token_from_env(os.environ)
         self.root = os.path.normpath(os.path.abspath(project_root))
         self.hub = EventHub(project_root=self.root)
         self._watcher = None
@@ -683,6 +705,15 @@ async def _handle_ws_client(
 ) -> None:
     """Serve one browser: replay history, then serve its commands.
 
+    A command must clear **both** gates: the peer's address
+    (:func:`control_allowed`) and the daemon's boot token. Neither replaces the
+    other. The address alone is not enough because it lies -- a WebSocket
+    handshake is exempt from same-origin, so any page in a browser on this host
+    reaches the socket as loopback, and a proxy on loopback makes every LAN peer
+    look local. The token alone is not enough either: it is readable on a shared
+    screen and quotable from a log, and ``RHIZOME_ALLOW_REMOTE_CONTROL`` opts out
+    of the address check, not out of authentication.
+
     Each inbound frame is dispatched inside its own guard: a command that blows
     up loses that command and nothing else -- not the connection, and certainly
     not the daemon.
@@ -700,6 +731,20 @@ async def _handle_ws_client(
                         "kind": "rootError",
                         "path": command["path"],
                         "reason": "remote control disabled",
+                    },
+                )
+                continue
+            if not token_matches(session.token, command["token"]):
+                # Answered rather than dropped: silence reads as a hung page.
+                # The wording names the token, because "remote control disabled"
+                # would send whoever reads it hunting for a network problem that
+                # is not there.
+                await _send(
+                    websocket,
+                    {
+                        "kind": "rootError",
+                        "path": command["path"],
+                        "reason": "invalid or missing control token",
                     },
                 )
                 continue
@@ -763,6 +808,7 @@ def _http_response(status: int, body: bytes, content_type: str) -> Response:
 
 def _process_request(
     static_root: Path | None,
+    session: Session | None,
     connection: ServerConnection,
     request: Request,
 ) -> Response | None:
@@ -771,6 +817,11 @@ def _process_request(
     This is what puts both protocols on one port: the browser loads the page
     and opens its WebSocket over the same origin, so a single forwarded port is
     enough for remote (SSH / VS Code) setups.
+
+    The HTML page -- and only it -- is handed the session's token on the way
+    out. That is the whole delivery mechanism: same-origin stops a cross-site
+    page from fetching this response to read it. Injecting into anything else
+    would corrupt a bundle and its sourcemap with it.
     """
     if request.headers.get("Upgrade", "").lower() == "websocket":
         return None
@@ -792,7 +843,21 @@ def _process_request(
         return _http_response(404, b"not found\n", "text/plain; charset=utf-8")
 
     content_type, _ = mimetypes.guess_type(target.name)
+    if session is not None and (content_type or "").startswith("text/html"):
+        body = _with_token(body, session.token)
     return _http_response(200, body, content_type or "application/octet-stream")
+
+
+def _with_token(body: bytes, token: str) -> bytes:
+    """The page carrying its token, or the page untouched if it will not decode.
+
+    A page that cannot be read as UTF-8 is not one this daemon built; serving it
+    tokenless beats serving a mangled one.
+    """
+    try:
+        return inject_token(body.decode("utf-8"), token).encode("utf-8")
+    except UnicodeDecodeError:
+        return body
 
 
 async def start_server(
@@ -812,7 +877,7 @@ async def start_server(
         functools.partial(_handle_ws_client, hub, session),
         host=host,
         port=port,
-        process_request=functools.partial(_process_request, static_root),
+        process_request=functools.partial(_process_request, static_root, session),
     )
 
 

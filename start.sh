@@ -14,6 +14,7 @@
 #   ./start.sh --no-build     # skip the front end, serve the existing web/dist
 #   ./start.sh --dev          # daemon + Vite dev server (hot reload) on http://localhost:5173
 #   ./start.sh --print-npm    # only resolve npm, print the path on stdout and exit (starts nothing)
+#   ./start.sh --print-token  # only resolve the control token, print it on stdout and exit (starts nothing)
 #   ./start.sh --help
 #
 # How npm is resolved (in this order):
@@ -44,6 +45,9 @@
 #                                                   WebSocket at /ws (one forwarded port
 #                                                   is enough over SSH)
 #   RHIZOME_PROJECT_ROOT   (cwd)                    root the graph's paths are relative to
+#   RHIZOME_TOKEN          (minted at boot)         control token the page must send back with
+#                                                   every command; set it to point a second
+#                                                   tool at this daemon (--print-token shows it)
 #   PYTHON  NODE  NPM      executable overrides
 #
 set -euo pipefail
@@ -55,15 +59,17 @@ cd "$REPO_ROOT"
 MODE="prod"      # prod | dev
 BUILD="auto"     # auto | force | skip
 PRINT_NPM=0
-LOG_FD=1         # --print-npm sends every log line to stderr: stdout is the answer
+PRINT_TOKEN=0
+LOG_FD=1         # --print-npm / --print-token send every log line to stderr: stdout is the answer
 for arg in "$@"; do
   case "$arg" in
-    --dev)       MODE="dev" ;;
-    --rebuild)   BUILD="force" ;;
-    --no-build)  BUILD="skip" ;;
-    --print-npm) PRINT_NPM=1; LOG_FD=2 ;;
+    --dev)         MODE="dev" ;;
+    --rebuild)     BUILD="force" ;;
+    --no-build)    BUILD="skip" ;;
+    --print-npm)   PRINT_NPM=1; LOG_FD=2 ;;
+    --print-token) PRINT_TOKEN=1; LOG_FD=2 ;;
     -h|--help)
-      sed -n '2,48p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'
+      sed -n '2,52p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'
       exit 0 ;;
     *) echo "Unknown argument: $arg (use --help)" >&2; exit 2 ;;
   esac
@@ -185,6 +191,28 @@ if ! "$PYTHON" -c "import websockets" >/dev/null 2>&1; then
   "$PYTHON" -m pip install --quiet -e "$REPO_ROOT[daemon]"
 fi
 
+# ---- 1b. control token -----------------------------------------------------
+# One token for the whole run. An existing RHIZOME_TOKEN is respected: that is how
+# a probe or a second viewer is pointed at this daemon, and minting over it would
+# disconnect that tool silently. Otherwise rhizome_graph.token mints it -- the one
+# place that decides what a token looks like; a $RANDOM in shell would drift from
+# it in entropy and in alphabet.
+# It is NOT exported here. Only --dev needs it in the environment (see step 4):
+# Vite substitutes every VITE_-prefixed variable into the bundle, so a token
+# visible to `npm run build` would be baked into web/dist -- stale by the next
+# boot, and a secret inside a build artifact.
+CONTROL_TOKEN="${RHIZOME_TOKEN:-}"
+if [[ -z "$CONTROL_TOKEN" ]]; then
+  # A mint that fails must not take the whole run down: in prod the daemon mints
+  # its own and injects it, so the only casualty is --dev, which says so below.
+  CONTROL_TOKEN="$("$PYTHON" -c 'from rhizome_graph.token import mint_token; print(mint_token())' 2>/dev/null || true)"
+fi
+
+if [[ "$PRINT_TOKEN" == "1" ]]; then
+  printf '%s\n' "$CONTROL_TOKEN"
+  exit 0
+fi
+
 # ---- 2. Frontend -----------------------------------------------------------
 DIST="$REPO_ROOT/web/dist"
 
@@ -264,6 +292,17 @@ echo
 
 # ---- 4. start --------------------------------------------------------------
 if [[ "$MODE" == "dev" ]]; then
+  # Vite serves the page from source, so the daemon -- the only thing that injects
+  # window.__RHIZOME_TOKEN__ -- never touches that HTML. The page falls back to
+  # import.meta.env.VITE_RHIZOME_TOKEN, and only a VITE_-prefixed variable reaches
+  # it. Both names must carry the SAME value: two different tokens lock the page
+  # out exactly as none does. Exported in this branch alone -- prod builds here.
+  if [[ -z "$CONTROL_TOKEN" ]]; then
+    warn "No control token could be minted; the Vite-served page will be refused every"
+    warn "command (ctrl+L, completion, file click). Set RHIZOME_TOKEN to pin one."
+  fi
+  export RHIZOME_TOKEN="$CONTROL_TOKEN"
+  export VITE_RHIZOME_TOKEN="$CONTROL_TOKEN"
   log "Starting the daemon (background) + Vite dev server (http://localhost:5173)"
   "$PYTHON" -m daemon.server &
   DAEMON_PID=$!

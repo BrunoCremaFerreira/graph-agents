@@ -109,6 +109,7 @@ rhizome_graph/normalize.py  # pure: hook JSON → Event; also actor_of / seed_ev
 rhizome_graph/tree.py       # boot snapshot of the observed project
 rhizome_graph/repo.py       # pure: reads .git/HEAD for the branch (never shells out to git)
 rhizome_graph/paths.py      # pure: resolve a typed root, and complete a directory like a shell
+rhizome_graph/token.py      # pure: the control token — mint, compare, and inject into the page
 rhizome_graph/hexdump.py    # pure: the xxd format, byte for byte, + is-this-binary
 rhizome_graph/gitcmd.py     # the ONE place that forks `git` (kill + close + reap on timeout)
 rhizome_graph/diff.py       # the uncommitted diff of one file (see the note in Status)
@@ -135,6 +136,7 @@ web/src/readMarker.ts       # the violet ring a file wears while an agent is rea
 web/src/statusList.ts       # pure: the uncommitted-changes panel (order, cap, is it visible)
 web/src/searchKeys.ts       # pure: what ctrl+F / F3 / Esc mean
 web/src/branding.ts         # pure: APP_NAME, so the untestable renderer never spells it
+web/src/token.ts            # pure: read the control token, stamp it on a command frame
 web/src/*Hud.ts             # thin DOM painters: context caption, event list, attribution, search
                             # box, git status panel
 run.sh / start.sh           # minimal launcher / full bootstrap
@@ -224,7 +226,7 @@ turns each fix plan into a failing test, and a developer takes it green.
 
 Web MVP implemented and verified end-to-end (TDD).
 
-- **Backend** (`rhizome_graph/`, `hooks/`, `daemon/`): 549/549 pytest green. Hook is stdlib-only
+- **Backend** (`rhizome_graph/`, `hooks/`, `daemon/`): 621/621 pytest green. Hook is stdlib-only
   and exits 0 on garbage input. Daemon seeds the project tree at boot, ingests hook events on
   a Unix socket, watches the filesystem, and serves `web/dist` over HTTP **and** broadcasts
   events over WebSocket (`/ws`) on a single port (`:8080`) — one forwarded port is enough for
@@ -330,11 +332,50 @@ Web MVP implemented and verified end-to-end (TDD).
   - **A deleted file had to become clickable**, so `file_view` now tries the diff *before*
     concluding "no such file": the row the user most wants to open is the one whose content is
     gone. The directory check stays ahead of the diff.
-- **Control commands are loopback-only** (`RHIZOME_ALLOW_REMOTE_CONTROL=1` opens them up).
-  The listener binds every interface, so without the gate anyone who can reach `:8080` could
-  list the host's directories and repoint the graph. SSH and VS Code forwarding arrive as
-  loopback, so the ordinary remote setup is unaffected.
-- **Frontend** (`web/`): 958/958 vitest green, `tsc` + `vite build` clean. `shiki` (pinned to
+- **A control command must pass two gates: the peer's address AND a token.** The first is the
+  older one — loopback-only, `RHIZOME_ALLOW_REMOTE_CONTROL=1` opens it up — and it is not
+  enough on its own, because the peer's address lies in two measured ways. A WebSocket
+  handshake is exempt from the same-origin policy and needs no preflight, so any page in any
+  browser on the host can open `ws://127.0.0.1:8080/ws` and send `setRoot` + `file`; and any
+  loopback-side proxy launders a remote connection into a local one, which `vite.config.ts`
+  does by default (`host: true` plus a `/ws` proxy), so `./start.sh --dev` handed the whole
+  LAN a gate that says `127.0.0.1`. Both were reproduced against a live daemon: arbitrary
+  file read as the daemon's user, no credential anywhere in the protocol.
+  So the daemon mints a token at boot (`rhizome_graph/token.py`), **injects it into the
+  `index.html` it serves**, and refuses any command frame that does not carry it back. A
+  cross-site page cannot read it — same-origin is what stops it fetching the page — and a
+  proxy carries none. It was chosen over an `Origin` allow-list for one reason: an allow-list
+  has to know the port, and `ssh -L 9000:localhost:8080` or a VS Code forward means the
+  browser's origin is a port the daemon never hears about. A token is indifferent to how you
+  reached the page. Five things are load-bearing:
+  - **Two conditions, never one.** `token_matches` is checked *after* `control_allowed`, and
+    neither replaces the other: the tests pin that a right token does not let a remote peer
+    through, and that a wrong token is refused even with remote control opened up.
+  - **The empty token is always refused.** `token_matches` returns `False` for an empty
+    `expected` before it reaches `hmac.compare_digest` — a daemon that failed to mint one must
+    not silently start accepting tokenless commands. Everything fails closed.
+  - **`parse_command` always returns `kind`, `path` and `token`**, with `token: ""` when the
+    frame named none (as it does for a `null`, a number or an object). Absence and emptiness
+    must stay distinguishable, since the whole gate turns on the difference between the empty
+    token and one that matches — so do not "tidy away" the empty key from an assertion.
+  - **`inject_token` escapes for the script element, not just for JSON.** `json.dumps` then
+    `<`, `>` and `&` folded to `\uXXXX`, so a token spelled as a closing script tag round-trips
+    intact and leaves exactly one closing-script sequence in the page. An injection bug here
+    would turn a security fix into an XSS.
+  - **The browser stamps the token in `WsClient.send`**, the single chokepoint, so no call site
+    can forget it; `main.ts` is unchanged. With no token available the frame carries **no
+    `token` key at all**, not an empty one.
+  `--dev` is the one case where the daemon never touches the HTML (Vite serves it and proxies
+  `/ws`), so `start.sh` mints one token there and exports it twice: `RHIZOME_TOKEN` for the
+  daemon and `VITE_RHIZOME_TOKEN` for Vite, which is the only prefix reaching
+  `import.meta.env`. The prod branch exports **neither** — a `VITE_`-prefixed variable alive
+  during `npm run build` is substituted into `dist/`, shipping a stale token inside the bundle.
+  An existing `RHIZOME_TOKEN` is honoured verbatim, which is how a probe reaches the same
+  daemon; `./start.sh --print-token` prints it and starts nothing. A mint that fails is
+  tolerated rather than fatal (the `python` stub in the older `start.sh` tests answers every
+  call with silence, and prod does not need the variable at all) — it warns on stderr in
+  `--dev`, where the cost is that every command is refused.
+- **Frontend** (`web/`): 990/990 vitest green, `tsc` + `vite build` clean. `shiki` (pinned to
   3.23.0 — 4.x needs Node ≥ 20 and this machine has 18) is the first runtime dependency added
   since `d3-force`; note that `npm install` under npm 10 strips the `libc` fields from
   `package-lock.json`, so check `git diff` on the lock after touching dependencies. Gource-style WebGL
@@ -463,7 +504,10 @@ nothing. Rebuilding `web/dist` (or running vitest/tsc) needs Node 18+ — `start
 serves a stale `dist` when node is missing, so a front-end change can look like it did
 nothing. Debug an empty screen with `RHIZOME_DEBUG_LOG` (records hook *failures*) or
 `RHIZOME_TRACE_LOG` (records every raw payload, which is how the shape of the hook JSON
-gets settled on a new Claude Code version) on the hook command.
+gets settled on a new Claude Code version) on the hook command. A viewer that draws the graph
+but refuses every `ctrl+L`, completion and file click is the control token failing, not the
+page: `./start.sh --print-token` shows what the daemon expects, and `RHIZOME_TOKEN=<value>`
+pins it when something outside the page has to send a command.
 
 **A tree that updates while nobody is on camera means the hooks are not installed.** The
 watcher alone gives completeness with no authorship, every event arrives with `agent: ""`,

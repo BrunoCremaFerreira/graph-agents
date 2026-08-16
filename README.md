@@ -134,6 +134,7 @@ http://localhost:8080
 | `./start.sh --dev` | daemon + Vite dev server with hot reload (`http://localhost:5173`) |
 | `./start.sh --rebuild` | forces a reinstall/rebuild of the frontend |
 | `./start.sh --no-build` | skips the frontend, serves the existing `web/dist` |
+| `./start.sh --print-token` | prints the control token and exits, starting nothing |
 | `./start.sh --help` | help |
 
 > `run.sh` is a minimal launcher (daemon only, assuming everything is already prepared). For
@@ -197,8 +198,33 @@ Environment variables (all optional):
 | `RHIZOME_HTTP_PORT` | `8080` | Single port serving `web/dist` **and** the WebSocket at `/ws`. |
 | `RHIZOME_PROJECT_ROOT` | cwd | Root the daemon seeds, watches, and makes paths relative to. |
 | `RHIZOME_DEBUG_LOG` | _unset_ | Set on the **hook** to append its failures to that file. Unset = total silence. |
+| `RHIZOME_TOKEN` | minted at boot | Control token. Set it to pin a known value; leave it alone for the normal case. |
 
 The socket must match between the hook and the daemon; if you change one, change the other.
+
+### The control token
+
+Watching the graph needs nothing. **Commanding** it — switching the root with `ctrl+L`, its
+tab-completion, and clicking a file open — needs a token, because the two-way half of the
+socket can read files off the host.
+
+The daemon mints one at boot and injects it into the `index.html` it serves, so the page you
+loaded already carries it and there is nothing to type. That holds through `ssh -L` and VS
+Code forwarding on **any** local port, since the page and its token travel together.
+
+What it stops is the pair of things a loopback check cannot see. A WebSocket handshake is
+exempt from the same-origin policy, so any page in your browser could otherwise open
+`ws://127.0.0.1:8080/ws` and drive the daemon; it cannot read this token, because same-origin
+is exactly what stops it fetching the page the token lives in. And any loopback-side proxy
+makes a remote connection look local — `--dev` runs one — while carrying no token at all.
+
+Set `RHIZOME_TOKEN` yourself only when something outside the page has to send a command (a
+script, a probe); `./start.sh --print-token` prints what the daemon expects without starting
+it. In `--dev` the same value is exported to Vite as `VITE_RHIZOME_TOKEN`, since there the page
+comes from Vite and the daemon never touches it.
+
+**If the graph draws but every command is refused, this is why** — not a broken page. Check
+that daemon and page agree on the token.
 
 `RHIZOME_PROJECT_ROOT` is the project you want to *watch* — set it to the observed
 project, not to `rhizome-graph` itself:
@@ -219,6 +245,7 @@ port would otherwise resolve to the *viewer's* machine and never connect.
 ```
 rhizome_graph/normalize.py   # pure core: hook JSON -> Event (defensive, never raises)
 rhizome_graph/tree.py        # boot snapshot of the project tree (the seed events)
+rhizome_graph/token.py       # pure: the control token — mint, compare, inject into the page
 hooks/emit_event.py        # hook: stdlib, forwards the event, always exit 0
 daemon/server.py           # asyncio: ingest + seed + attribution + WebSocket + HTTP
 daemon/watcher.py          # inotify watcher: what changed, whoever changed it
@@ -231,7 +258,8 @@ web/                       # TypeScript frontend (Vite)
   src/labels.ts            #   pure: label size, placement, which files get named
   src/avatar.ts            #   the agent figure, painted on a canvas
   src/renderer.ts          #   three.js + UnrealBloomPass (Gource look)
-  src/wsClient.ts          #   WebSocket client with reconnection
+  src/wsClient.ts          #   WebSocket client with reconnection (stamps the control token)
+  src/token.ts             #   pure: read the control token, stamp it on a command frame
 .claude/agents/            # the specialist agents that develop this repo
 tests/                     # pytest (backend)
 web/tests/                 # vitest (frontend)
@@ -266,8 +294,8 @@ npm run build
 
 ## Status and limitations
 
-- ✅ Backend: 97 `pytest` green; the hook exits with `exit 0` on invalid input.
-- ✅ Frontend: 87 `vitest` green; `tsc` + `vite build` clean.
+- ✅ Backend: 621 `pytest` green; the hook exits with `exit 0` on invalid input.
+- ✅ Frontend: 990 `vitest` green; `tsc` + `vite build` clean.
 - ✅ End-to-end integration, verified against a live daemon: the tree is seeded on connect, a
   `Write` flashes exactly once across both channels, `cp *.md docs/` reports each file
   actually copied and credits the agent, `rm -rf docs/` prunes the subtree, and an edit made

@@ -95,9 +95,14 @@ class _FakeClient:
 # --- 1. parse_command: a frame off the wire -> a command, or nothing --------
 
 def test_a_complete_command_is_understood():
+    # The empty `token` is spelled out rather than left off: a frame carrying no
+    # token parses to the empty one, and the whole gate turns on the difference
+    # between that and a token that matches (see `tests/test_ws_control_token.py`).
+    # Exact equality over the whole mapping is what keeps that observable here.
     assert parse_command('{"kind":"complete","path":"~/proj"}') == {
         "kind": "complete",
         "path": "~/proj",
+        "token": "",
     }
 
 
@@ -105,6 +110,7 @@ def test_a_set_root_command_is_understood():
     assert parse_command('{"kind":"setRoot","path":"/srv/other"}') == {
         "kind": "setRoot",
         "path": "/srv/other",
+        "token": "",
     }
 
 
@@ -268,6 +274,7 @@ def test_a_file_command_is_understood():
     assert parse_command('{"kind":"file","path":"src/app.ts"}') == {
         "kind": "file",
         "path": "src/app.ts",
+        "token": "",
     }
 
 
@@ -340,7 +347,13 @@ def test_a_loopback_peer_is_served_the_file_it_asked_for(
     monkeypatch.delenv("RHIZOME_ALLOW_REMOTE_CONTROL", raising=False)
     (tmp_path / "a.txt").write_text("hello\n", encoding="utf-8")
     session = Session(str(tmp_path), str(tmp_path))
-    client = _FakeClient('{"kind":"file","path":"a.txt"}', host="127.0.0.1")
+    # The frame carries the daemon's boot token, because a loopback address is
+    # no longer sufficient on its own (see `tests/test_ws_control_token.py`: a
+    # WebSocket handshake is not subject to same-origin, and a loopback proxy
+    # makes every LAN peer look local). This test is still about the dispatch,
+    # not about the token -- it only has to get past the gate.
+    frame = json.dumps({"kind": "file", "path": "a.txt", "token": session.token})
+    client = _FakeClient(frame, host="127.0.0.1")
 
     _run(_handle_ws_client(session.hub, session, client))
 

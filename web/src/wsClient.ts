@@ -21,6 +21,7 @@ import {
   type RootError,
   type RootReset,
 } from "./protocol";
+import { readToken, withToken } from "./token";
 
 export type EventSink = (event: AgentEvent) => void;
 export type MetaSink = (meta: DaemonMeta) => void;
@@ -83,6 +84,17 @@ export function resolveWsUrl(): string {
   return FALLBACK_URL;
 }
 
+/**
+ * The control token for this page, read fresh on every request.
+ *
+ * Not cached at construction: outside a browser there may be no `window` at
+ * all, and reading it late costs nothing on a path driven by a keystroke.
+ */
+function currentToken(): string {
+  const win = typeof window !== "undefined" ? window : undefined;
+  return readToken(win, import.meta.env);
+}
+
 export class WsClient {
   private socket: WebSocket | null = null;
   private closed = false;
@@ -132,13 +144,17 @@ export class WsClient {
    * `disconnect`, or one mid-backoff after the daemon restarted. This is called
    * straight from a key handler, and an exception thrown out of it leaves the
    * page with a dead keyboard — for a keystroke that could simply be dropped.
+   *
+   * This is also the ONE place the control token is stamped on. `main.ts`
+   * writes three different requests from three different handlers, and a token
+   * added at those call sites is a token the fourth request will not have.
    */
   send(payload: object): void {
     const socket = this.socket;
     if (!socket) return;
     if (socket.readyState !== WebSocket.OPEN) return;
     try {
-      socket.send(JSON.stringify(payload));
+      socket.send(JSON.stringify(withToken(payload, currentToken())));
     } catch {
       // A socket that died between the check and the write, or a payload that
       // cannot be stringified: still not worth breaking the page over.

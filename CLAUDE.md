@@ -208,6 +208,11 @@ Custom agents live in `.claude/agents/`:
 - **`security-auditor`** — audits the network surface, the path defences, the `git` runner and
   the hook; writes a report and a per-finding remediation plan. Writes **no** code, no tests,
   no fixes — its plan names the module to change and the RED test that must come first.
+- **`software-architect`** — assesses structure for maintainability, performance and security:
+  module boundaries, where a decision belongs, what a coupling will cost the next change.
+  Writes **no** code, no tests, no fixes — it hands back an assessment plus a staged plan whose
+  every step is one RED test and one GREEN implementation, with an owner per step. Use it
+  before a feature that crosses layers, not for a change that fits inside one module.
 
 This project follows **Test-Driven Development**. The intended loop:
 
@@ -220,7 +225,10 @@ Subagents don't call each other directly — the main session orchestrates the h
 (tester produces the failing tests → developer implements to green). Start a new feature by
 asking the tester for the RED tests, not by asking a developer to implement blind. A security
 finding enters the same loop rather than bypassing it: `security-auditor` reports, the tester
-turns each fix plan into a failing test, and a developer takes it green.
+turns each fix plan into a failing test, and a developer takes it green. `software-architect`
+enters it at the other end: it shapes the plan *before* the tester is asked for the first RED
+test, and it is the agent to consult when the question is where code belongs rather than what
+it should do.
 
 ## Status
 

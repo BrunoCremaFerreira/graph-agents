@@ -47,8 +47,23 @@ def diff_command(relative_path: str) -> list[str]:
     after ``--``, where `git` can only read it as a path. No quoting, no ``./``
     prefix, no escaping: this is argv, not a shell line, and mangling the path
     would make `git` diff a file that does not exist.
+
+    ``--`` alone is not enough, and that gap was a real escape. It ends *option*
+    parsing; what follows is still a **pathspec**, which is a small query
+    language: ``:/secret.txt`` and ``:(top)secret.txt`` mean "that file at the
+    top of the REPOSITORY" -- above the observed root whenever the root is a
+    subdirectory of the checkout -- and ``*.txt`` widens one click into every
+    file the pattern matches. The caller's containment check cannot see it,
+    because such a string is neither absolute nor holds ``..``, so it normalizes
+    to a path inside the root.
+
+    ``--literal-pathspecs`` closes all of it at once: it turns off magic *and*
+    wildcards for the whole invocation. It is a main-command option, so it must
+    precede the subcommand. It is also a fix in the other direction: a file
+    honestly named ``:notes.txt`` was invisible before, its leading colon read as
+    an empty magic prefix.
     """
-    return ["git", "diff", "HEAD", "--", relative_path]
+    return ["git", "--literal-pathspecs", "diff", "HEAD", "--", relative_path]
 
 
 def parse_diff_output(stdout: str) -> str | None:

@@ -95,9 +95,17 @@ def _repo(root: Path, **files: str) -> Path:
 
 
 # --- 1. diff_command: the argv, pinned --------------------------------------
+#
+# These three state the shape without transcribing it. An earlier version pinned
+# the exact list `["git", "diff", "HEAD", "--", "src/app.ts"]`, which made any
+# neutralization of pathspec magic (section 4) look like a regression even when
+# it was the fix. What actually matters is stated directly: the comparison is
+# against HEAD, and the path is the last word, behind `--`, unmangled.
 
 def test_the_diff_is_taken_against_head():
-    assert diff_command("src/app.ts") == ["git", "diff", "HEAD", "--", "src/app.ts"]
+    argv = diff_command("src/app.ts")
+
+    assert argv[0] == "git" and argv[argv.index("diff") + 1] == "HEAD"
 
 
 def test_the_path_is_passed_after_a_double_dash():
@@ -105,13 +113,15 @@ def test_the_path_is_passed_after_a_double_dash():
     # on disk); without the separator `git` would read it as an option.
     argv = diff_command("-x")
 
-    assert argv[-2:] == ["--", "-x"]
+    assert argv.index("--") == len(argv) - 2 and argv[-1].endswith("-x")
 
 
 def test_a_path_that_looks_like_an_option_is_not_rewritten():
-    # No quoting, no `./` prefix, no escaping: argv is not a shell line, and
+    # No quoting, no `./` prefix, no shell escaping: argv is not a shell line, and
     # mangling the path here would make `git` diff a file that does not exist.
-    assert diff_command("--cached")[-1] == "--cached"
+    # (A literal-pathspec marker is not mangling: it removes a meaning, it does
+    # not change which file is named. See section 4.)
+    assert diff_command("--cached")[-1].endswith("--cached")
 
 
 # --- 2. parse_diff_output: empty means "no change" --------------------------
@@ -243,3 +253,147 @@ def test_a_git_that_hangs_is_given_up_on(monkeypatch: pytest.MonkeyPatch, tmp_pa
     elapsed = time.monotonic() - started
 
     assert diff is None and elapsed < 5.0
+
+
+# --- 4. the path is a path, never a pathspec --------------------------------
+#
+# The defect these specify, measured against git 2.43.0: `diff_command` puts the
+# caller's string after `--` and calls that safe, but `--` only ends *option*
+# parsing. Everything after it is still read as a **pathspec**, and a pathspec is
+# a small query language, not a file name:
+#
+#   * `:/x`      -- x, relative to the top of the REPOSITORY;
+#   * `:(top)x`  -- the same thing, long form;
+#   * `:/`       -- everything in the repository;
+#   * `*.txt`    -- a glob, matching files nobody named.
+#
+# The first three climb above the observed root whenever it is a subdirectory of
+# the checkout, which `ctrl+L` allows and `status.relativize` exists to support.
+# The caller's containment check cannot see any of it: `:/secret.txt` is not
+# absolute and holds no `..`, so joining it onto the root normalizes to a path
+# *inside* the root, and `realpath` returns that nonexistent path happily.
+#
+# The defence belongs here, not only in the caller: this module's argument is
+# documented as "the path is data", and data is exactly what it is not being
+# treated as. Two shapes qualify -- the global `--literal-pathspecs` flag (which
+# must precede the subcommand) or git's own `:(literal)` prefix on the path -- and
+# `_reaches_git_literally` accepts either, so the fix is not pinned to one.
+
+def _reaches_git_literally(argv: list[str], path: str) -> bool:
+    """Whether `argv` hands `path` to `git` in a form it cannot read as a query.
+
+    Route one, the global flag: `--literal-pathspecs` disables magic *and*
+    wildcards for the whole invocation, and it is a main-command option, so it is
+    only honoured before the subcommand.
+
+    Route two, the marker: `:(literal)` says the rest of this one pathspec is a
+    file name, wildcards included.
+    """
+    if "--literal-pathspecs" in argv:
+        return "diff" in argv and argv.index("--literal-pathspecs") < argv.index("diff")
+    return argv[-1] == f":(literal){path}"
+
+
+def test_a_path_that_looks_like_pathspec_magic_is_not_left_readable_as_magic():
+    # `:/secret.txt` means "secret.txt at the top of the repository", which is
+    # above the observed root when the root is a subdirectory of the checkout.
+    path = ":/secret.txt"
+
+    assert _reaches_git_literally(diff_command(path), path)
+
+
+def test_a_path_holding_a_wildcard_is_not_left_readable_as_a_glob():
+    # A glob does not escape the root, it widens the request: one click on one
+    # node comes back as the diff of every file the pattern happened to match.
+    path = "*.txt"
+
+    assert _reaches_git_literally(diff_command(path), path)
+
+
+def test_an_ordinary_path_is_still_the_last_word_of_the_argv():
+    # The neutralization must not become quoting or escaping: whatever marker is
+    # used, the file named has to stay the file named.
+    argv = diff_command("src/app.ts")
+
+    assert argv[-1].endswith("src/app.ts") and argv[-2] == "--"
+
+
+def _split_repo(tmp_path: Path) -> tuple[Path, Path]:
+    """A checkout whose top holds a secret, with `sub/` as the observed root.
+
+    Three files are left modified, so every one of them has a diff to leak:
+    `secret.txt` at the top (outside the observed root), and `inner.txt` /
+    `other.txt` inside it (only one of which any test names).
+    """
+    root = _repo(
+        tmp_path / "proj",
+        **{
+            "secret.txt": "old secret\n",
+            "sub/inner.txt": "old inner\n",
+            "sub/other.txt": "old other\n",
+        },
+    )
+    (root / "secret.txt").write_text("PRIVATE TOKEN\n", encoding="utf-8")
+    (root / "sub" / "inner.txt").write_text("changed inner\n", encoding="utf-8")
+    (root / "sub" / "other.txt").write_text("changed other\n", encoding="utf-8")
+    return root, root / "sub"
+
+
+def test_repository_relative_magic_does_not_reach_above_the_observed_root(tmp_path: Path):
+    _, sub = _split_repo(tmp_path)
+
+    diff = _run(git_diff(str(sub), ":/secret.txt"))
+
+    assert "PRIVATE TOKEN" not in (diff or "")
+
+
+def test_the_long_form_of_the_top_magic_does_not_reach_above_it_either(tmp_path: Path):
+    # `--literal-pathspecs` kills every spelling at once; a fix that only knew
+    # about the short one would still be open here.
+    _, sub = _split_repo(tmp_path)
+
+    diff = _run(git_diff(str(sub), ":(top)secret.txt"))
+
+    assert "PRIVATE TOKEN" not in (diff or "")
+
+
+def test_the_bare_root_pathspec_does_not_diff_the_whole_repository(tmp_path: Path):
+    # `:/` alone is not even a file name; against a real checkout it returned
+    # tens of megabytes, the entire repository's pending diff.
+    _, sub = _split_repo(tmp_path)
+
+    diff = _run(git_diff(str(sub), ":/"))
+
+    assert diff is None
+
+
+def test_a_glob_does_not_diff_files_that_were_never_named(tmp_path: Path):
+    # `other.txt` is inside the observed root, so nothing is escaping here -- but
+    # the caller asked about one path and got a second file's content back.
+    _, sub = _split_repo(tmp_path)
+
+    diff = _run(git_diff(str(sub), "*.txt"))
+
+    assert "changed other" not in (diff or "")
+
+
+def test_a_single_character_wildcard_does_not_stand_in_for_a_real_file(tmp_path: Path):
+    _, sub = _split_repo(tmp_path)
+
+    diff = _run(git_diff(str(sub), "?nner.txt"))
+
+    assert "changed inner" not in (diff or "")
+
+
+def test_a_file_whose_name_begins_with_a_colon_still_gets_its_diff(tmp_path: Path):
+    # The regression guard, and a second symptom of the same defect: a file
+    # literally named `:notes.txt` is legal on disk and is on the graph like any
+    # other, and today `git` reads its name as an empty magic prefix and reports
+    # nothing. Refusing everything that smells of a pathspec would leave it just
+    # as invisible.
+    root = _repo(tmp_path / "proj", **{":notes.txt": "old\n"})
+    (root / ":notes.txt").write_text("changed\n", encoding="utf-8")
+
+    diff = _run(git_diff(str(root), ":notes.txt"))
+
+    assert diff is not None and "+changed" in diff

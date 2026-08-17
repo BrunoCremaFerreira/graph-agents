@@ -1,0 +1,12 @@
+rhizome-graph (0.0.0-1) unstable; urgency=medium
+
+  * Initial packaging. The version is the one pyproject.toml declares, plus a
+    Debian revision; packaging/build-deb.sh reads it from the line above, so
+    this file is the single place a release bumps.
+  * Carries a virtualenv holding websockets alone, because the daemon imports
+    websockets.asyncio.server and the version Debian ships predates it.
+  * Carries the built front end at /usr/lib/rhizome-graph/web, which is where
+    rhizome_graph/assets.py looks for it on an installed system. It is
+    gitignored build output, so it must be built before the package is.
+
+ -- rhizome-graph contributors <brn.qi.home@gmail.com>  Sun, 16 Aug 2026 12:00:00 +0000

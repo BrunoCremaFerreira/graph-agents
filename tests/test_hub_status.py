@@ -477,135 +477,30 @@ def test_the_status_is_polled_every_three_seconds():
     assert getattr(server, "STATUS_POLL_INTERVAL_SECONDS", None) == 3.0
 
 
-# --- 5. RHIZOME_STATUS_INTERVAL: the escape hatch -----------------------
+# --- 5 and 6. RHIZOME_STATUS_INTERVAL: moved, not dropped -------------------
 #
-# Motivation: on a large repository on a slow disk, forking `git status` every
-# three seconds is the most expensive thing the daemon does, and somebody
-# watching may want it rarer -- or off. The variable is set by hand in a shell,
-# so every way a human mistypes one has to land somewhere sane: the daemon boots
-# once, and refusing to start over a typo in an optional knob costs the whole
-# session, not just the panel.
-
-def test_without_the_variable_the_poll_runs_at_the_default_interval(
-    monkeypatch: pytest.MonkeyPatch,
-):
-    monkeypatch.delenv("RHIZOME_STATUS_INTERVAL", raising=False)
-
-    assert server._status_poll_interval() == server.STATUS_POLL_INTERVAL_SECONDS
-
-
-def test_a_number_in_the_variable_becomes_the_interval(
-    monkeypatch: pytest.MonkeyPatch,
-):
-    monkeypatch.setenv("RHIZOME_STATUS_INTERVAL", "12.5")
-
-    assert server._status_poll_interval() == 12.5
-
-
-def test_zero_turns_the_poll_off(monkeypatch: pytest.MonkeyPatch):
-    # "Off" is expressed as a non-positive interval, which `run` then refuses to
-    # create a task for: a loop that only sleeps is still a loop to reason about.
-    monkeypatch.setenv("RHIZOME_STATUS_INTERVAL", "0")
-
-    assert server._status_poll_interval() <= 0
-
-
-def test_a_negative_interval_turns_the_poll_off_too(
-    monkeypatch: pytest.MonkeyPatch,
-):
-    # Not clamped up to the default: a negative value is somebody disabling it.
-    monkeypatch.setenv("RHIZOME_STATUS_INTERVAL", "-1")
-
-    assert server._status_poll_interval() <= 0
-
-
-def test_an_empty_variable_reads_as_unset(monkeypatch: pytest.MonkeyPatch):
-    # `export RHIZOME_STATUS_INTERVAL=` in a wrapper script is the common way
-    # to get an empty one, and it means "I did not choose", not "off".
-    monkeypatch.setenv("RHIZOME_STATUS_INTERVAL", "")
-
-    assert server._status_poll_interval() == server.STATUS_POLL_INTERVAL_SECONDS
-
-
-def test_a_blank_variable_reads_as_unset(monkeypatch: pytest.MonkeyPatch):
-    monkeypatch.setenv("RHIZOME_STATUS_INTERVAL", "   ")
-
-    assert server._status_poll_interval() == server.STATUS_POLL_INTERVAL_SECONDS
-
-
-def test_garbage_falls_back_to_the_default_instead_of_crashing_the_boot(
-    monkeypatch: pytest.MonkeyPatch,
-):
-    monkeypatch.setenv("RHIZOME_STATUS_INTERVAL", "3 seconds")
-
-    assert server._status_poll_interval() == server.STATUS_POLL_INTERVAL_SECONDS
-
-
-def test_a_number_with_surrounding_spaces_is_still_a_number(
-    monkeypatch: pytest.MonkeyPatch,
-):
-    monkeypatch.setenv("RHIZOME_STATUS_INTERVAL", " 5 ")
-
-    assert server._status_poll_interval() == 5.0
-
-
-# --- 6. run(): no interval, no task -----------------------------------------
-
-async def _boot(tmp_path: Path) -> asyncio.Task:
-    """Start the daemon on a throwaway root, socket and ephemeral port."""
-    root = tmp_path / "observed"
-    root.mkdir(exist_ok=True)
-    task = asyncio.create_task(
-        server.run(str(tmp_path / "ingest.sock"), 0, str(root))
-    )
-    await asyncio.sleep(0.2)  # let the boot sequence get past task creation
-    return task
-
-
-async def _shutdown(task: asyncio.Task) -> None:
-    task.cancel()
-    with contextlib.suppress(asyncio.CancelledError, Exception):
-        await asyncio.wait_for(task, timeout=10)
-
-
-def _recording_poll_status(calls: list[float]):
-    async def fake(self, interval: float = server.STATUS_POLL_INTERVAL_SECONDS):
-        calls.append(interval)
-        await asyncio.sleep(3600)
-
-    return fake
-
-
-def test_the_daemon_starts_no_status_poll_when_the_interval_is_off(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-):
-    # The whole point of `0`: not a loop that wakes up and skips, no loop.
-    calls: list[float] = []
-    monkeypatch.setenv("RHIZOME_STATUS_INTERVAL", "0")
-    monkeypatch.setattr(server.Session, "poll_status", _recording_poll_status(calls))
-
-    async def scenario():
-        task = await _boot(tmp_path)
-        try:
-            assert calls == []
-        finally:
-            await _shutdown(task)
-
-    _run(scenario())
-
-
-def test_the_daemon_polls_the_status_at_the_interval_it_was_given(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-):
-    calls: list[float] = []
-    monkeypatch.setenv("RHIZOME_STATUS_INTERVAL", "7.5")
-    monkeypatch.setattr(server.Session, "poll_status", _recording_poll_status(calls))
-
-    async def scenario():
-        task = await _boot(tmp_path)
-        try:
-            assert calls == [7.5]
-        finally:
-            await _shutdown(task)
-
-    _run(scenario())
+# Ten tests lived here: eight calling `server._status_poll_interval()` with the
+# variable set to a number, zero, a negative, an empty string, blanks, garbage
+# and a padded number; and two booting `run()` with the variable set, to pin
+# that a non-positive interval creates no task and that a positive one reaches
+# the loop.
+#
+# Both halves rested on the daemon reading the variable itself, at the moment it
+# was needed, from wherever the process happened to be started. That is the
+# ambient configuration this stage removes: `main()` is now the only reader, and
+# what it builds is a `Settings` that a second front door (`rhi`) can build from
+# a flag instead. `_status_poll_interval()` has nowhere left to stand, so the
+# tests naming it went with it -- to the two places the behaviour now lives:
+#
+#   * the parsing, on `settings_from` --
+#     `tests/test_cli_settings.py::test_a_usable_status_interval_is_taken_from_the_environment`
+#     (the number, the padded number, zero and the negative) and
+#     `::test_an_unusable_status_interval_falls_back_to_the_default`
+#     (empty, blank, garbage), plus
+#     `::test_the_default_status_interval_is_the_daemons_own` for the unset case;
+#   * the effect, on `run()` --
+#     `tests/test_run_settings.py::test_a_status_interval_of_zero_starts_no_poll_at_all`
+#     and `::test_the_status_poll_runs_at_the_interval_the_settings_carried`.
+#
+# `test_the_status_is_polled_every_three_seconds` above stays: the default is a
+# property of the daemon, not of the knob.

@@ -9,14 +9,51 @@ description = "Adapter that turns Claude Code hook events into a Gource-style ev
 requires-python = ">=3.10"
 dependencies = []
 
+# The front door. `rhi` is typed once per session, so it is short; the target is
+# `rhizome_graph.cli:main`, which prints `--help` and `--version` without
+# importing anything from the daemon side.
+#
+# `rhi-hook` is the command a `.claude/settings.json` in another project names.
+# Its target is inside `rhizome_graph` on purpose: `hooks/` is not in
+# `[tool.setuptools] packages`, so a hook block pointing there names a file that
+# only exists inside somebody's checkout -- and a rename, a move or a `rm -rf`
+# then returns a blocking hook error on every single tool call.
+[project.scripts]
+rhi = "rhizome_graph.cli:main"
+rhi-hook = "rhizome_graph.hook:main"
+
 [project.optional-dependencies]
 # The daemon may use third-party deps; the hook (hooks/emit_event.py) MUST stay
 # stdlib-only and is intentionally excluded from any dependency here.
-daemon = ["websockets>=12", "watchdog>=4"]
-dev = ["pytest>=7", "websockets>=12", "watchdog>=4"]
+# websockets floor: daemon/server.py imports `websockets.asyncio.server`, which
+# first ships in the 13 series (12.0 has no `websockets/asyncio/` at all).
+# watchdog floor: daemon/watcher.py uses only FileSystemEvent,
+# FileSystemEventHandler and Observer, all present in 3.0.0, and the suite is
+# green there -- so 3 keeps Debian's python3-watchdog usable.
+daemon = ["websockets>=13", "watchdog>=3"]
+dev = ["pytest>=7", "websockets>=13", "watchdog>=3"]
 
+# `rhizome_graph.web` is not Python: it is the built front end, mapped in from
+# `web/dist`. It has to travel inside the import package because that is the
+# only place `rhizome_graph.assets.web_dist_candidates()` looks in an installed
+# distribution (`package_root / "web"`); shipped anywhere else -- a top-level
+# `web/`, `share/`, `data_files` -- the daemon never opens it and the page is
+# blank while everything else reports success. There is no `__init__.py` under
+# `web/dist` and there must not be one: it is data, and setuptools includes it
+# from `package-data` regardless.
+#
+# `web/dist` is gitignored build output, so a distribution built from a tree
+# where the front end was never built carries no page at all. That is the
+# failure `tests/test_distribution_front_end.py` exists to catch; build the
+# front end before `python -m build`.
 [tool.setuptools]
-packages = ["rhizome_graph", "daemon"]
+packages = ["rhizome_graph", "daemon", "rhizome_graph.web"]
+
+[tool.setuptools.package-dir]
+"rhizome_graph.web" = "web/dist"
+
+[tool.setuptools.package-data]
+"rhizome_graph.web" = ["**/*"]
 
 [tool.pytest.ini_options]
 minversion = "7.0"

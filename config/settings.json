@@ -31,7 +31,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "python3 /home/brn/projects/graph-agents/hooks/emit_event.py"
+            "command": "python3 /absolute/path/to/rhizome-graph/hooks/emit_event.py"
           }
         ]
       }

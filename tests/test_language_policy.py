@@ -34,13 +34,47 @@ import pytest
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
 
-#: Directories whose every source file is checked, recursively.
-SCANNED_DIRS = ("rhizome_graph", "daemon", "hooks", "web/src", "config", ".claude/agents")
+#: Directories whose every source file is checked, recursively. The last three
+#: are the packaging trees: a `Description:` read in `apt show`, a `desc` read in
+#: `brew info` and a build script that prints to a terminal are all authored text
+#: a human ends up reading.
+SCANNED_DIRS = (
+    "rhizome_graph",
+    "daemon",
+    "hooks",
+    "web/src",
+    "config",
+    ".claude/agents",
+    "debian",
+    "Formula",
+    "packaging",
+)
 
 #: Individually scanned files that sit at the repository root.
 SCANNED_FILES = ("start.sh", "run.sh", "CLAUDE.md", "README.md")
 
-SCANNED_SUFFIXES = {".py", ".ts", ".js", ".css", ".html", ".sh", ".json", ".md"}
+#: `""` is the suffix of `debian/control`, `debian/changelog` and every other
+#: maintainer file dpkg names without an extension, and naming a directory above
+#: without accepting it here scans zero files -- a green test over a tree nobody
+#: reads, which is worse than no coverage because the directory name reads as
+#: coverage. `.rb` is Homebrew's.
+SCANNED_SUFFIXES = {
+    "",
+    ".py",
+    ".ts",
+    ".js",
+    ".css",
+    ".html",
+    ".sh",
+    ".json",
+    ".md",
+    ".rb",
+}
+
+#: Directories that hold somebody else's bytes rather than authored text.
+#: `tmp`, `files` and `.debhelper` are what a Debian build leaves inside
+#: `debian/`; the policy has no business failing on a vendored dependency.
+GENERATED_DIRS = {"node_modules", "dist", "__pycache__", "tmp", "files", ".debhelper"}
 
 #: Any Latin letter carrying a diacritic. English here uses none. The two gaps
 #: are U+00D7 `×` and U+00F7 `÷`, which sit inside the Latin-1 letter block
@@ -89,7 +123,7 @@ def _scanned_files() -> list[Path]:
         for path in sorted(base.rglob("*")):
             if not path.is_file() or path.suffix not in SCANNED_SUFFIXES:
                 continue
-            if any(part in {"node_modules", "dist", "__pycache__"} for part in path.parts):
+            if any(part in GENERATED_DIRS for part in path.parts):
                 continue
             found.append(path)
     return found

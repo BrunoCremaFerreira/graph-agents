@@ -115,10 +115,19 @@ rhizome_graph/gitcmd.py     # the ONE place that forks `git` (kill + close + rea
 rhizome_graph/diff.py       # the uncommitted diff of one file (see the note in Status)
 rhizome_graph/status.py     # pure parse of `git status --porcelain -z` + the poll's frame
 rhizome_graph/file_view.py  # what a clicked file shows: diff, else text, else hex
-hooks/emit_event.py         # hook entrypoint: JSON in → daemon socket
+rhizome_graph/cli.py        # pure: argv + environ + cwd → frozen Settings; `rhi` itself
+rhizome_graph/assets.py     # pure: where THIS installation keeps web/dist, and the hook command
+rhizome_graph/ipc.py        # is that socket live? is that port free? (answers, never raises)
+rhizome_graph/launch.py     # the one place `rhi` names the daemon side
+rhizome_graph/window.py     # pure choice of backend + the two strategies (never sees a token)
+rhizome_graph/hookinstall.py # pure: diagnose a settings file, merge a hook block (idempotent)
+rhizome_graph/hook.py       # the hook's ONE implementation, stdlib-only, installed as rhi-hook
+hooks/emit_event.py         # shim over rhizome_graph/hook.py, for a checkout with no install
 daemon/server.py            # EventHub: seed, attribution, dedupe, meta, WebSocket + HTTP
 daemon/watcher.py           # inotify watcher (watchdog)
 config/settings.json        # hooks to install into a target project's .claude/
+debian/ packaging/ Formula/ # the .deb's control + build script + shims, and the Homebrew formula
+tools/webview_spike.py      # the WebGL measurement a human runs on a real desktop session
 web/src/avatar.ts           # the agent figure, painted on a canvas
 web/src/eventLog.ts         # pure: the recent-changes list model (drops seed, folds repeats)
 web/src/attribution.ts      # pure: has any attributed event arrived? (latch, never unlatches)
@@ -234,11 +243,102 @@ it should do.
 
 Web MVP implemented and verified end-to-end (TDD).
 
-- **Backend** (`rhizome_graph/`, `hooks/`, `daemon/`): 621/621 pytest green. Hook is stdlib-only
-  and exits 0 on garbage input. Daemon seeds the project tree at boot, ingests hook events on
-  a Unix socket, watches the filesystem, and serves `web/dist` over HTTP **and** broadcasts
-  events over WebSocket (`/ws`) on a single port (`:8080`) — one forwarded port is enough for
-  remote/SSH use, and the browser derives the socket URL from its own origin.
+- **Backend** (`rhizome_graph/`, `hooks/`, `daemon/`): 1081/1081 pytest green (1100 with
+  `RHIZOME_PACKAGE_TESTS=1`, which opts into the slow builds — one wheel, one real `.deb`).
+  Hook is stdlib-only and exits 0 on garbage input. Daemon seeds the project tree at boot,
+  ingests hook events on a Unix socket, watches the filesystem, and serves `web/dist` over
+  HTTP **and** broadcasts events over WebSocket (`/ws`) on a single port (`:8080`) — one
+  forwarded port is enough for remote/SSH use, and the browser derives the socket URL from
+  its own origin.
+- **It is an installed application now: `rhi <dir>`.** The five stages above are untouched;
+  what changed is how the daemon is started and where its assets live. Six things carry it,
+  and each is a rule rather than a detail:
+  - **Configuration is passed, not read from the air.** `rhizome_graph/cli.py` is a pure
+    `argv + environ + cwd → Settings` (frozen), and `run(settings, ready=None)` takes it.
+    `main()` is the **only** place in `daemon/server.py` that touches `os.environ`, and
+    `tests/test_daemon_environment_boundary.py` pins that with **no exemptions** — its
+    definition of "reads the environment" is deliberately wide enough to catch
+    `default_web_dist(os.environ)` passed as an *argument*. Before this, `rhi` would have had
+    to talk to the daemon through `os.environ`, which is a protocol between two halves of one
+    program. `start.sh` keeps exporting variables and keeps working; it is the from-source
+    developer bootstrap, `rhi` is the installed launcher, and all 50 of its pinned assertions
+    are untouched by this work.
+  - **`web/dist` is found by a search order, not by `__file__`.** `assets.py` walks
+    `$RHIZOME_WEB_DIST` → the packaged `rhizome_graph/web` → `/usr/lib/rhizome-graph/web` →
+    the checkout's `web/dist`. `daemon/server.py` keeps no path constant derived from
+    `__file__` at all. The old constant served nothing the moment it was installed anywhere
+    but a checkout, and the failure was a blank page with an `INFO` line, not an error.
+  - **A default may be adjusted; an explicit request may not.** `choose_port` walks off a busy
+    `:8080` and prints the port it actually got, but `--port 9000` that is taken **refuses**
+    (rc 1, one line, no traceback) — a user who typed 9000 and got 9001 has been lied to. The
+    ingest socket follows the same rule, and so does the window: `--window` with no backend is
+    a refusal, while the *default* degrades to headless.
+  - **A second daemon no longer steals the first's ingest socket.** That unlink was
+    unconditional; now a live socket raises `IngestSocketInUseError` and a stale one is cleared
+    as before. `ingest_socket_path` derives a root-hashed path for a second instance and `rhi`
+    **prints the `RHIZOME_SOCKET` its hook block needs** — attribution for a second instance is
+    opt-in and explicit rather than silently broken. The *same* root started twice refuses
+    rather than walking again, and that refusal is inherited from the guard, not re-implemented.
+  - **One teardown, four triggers.** Everything real — signal handlers, cancelling the polls,
+    `session.stop()`, unlinking the socket — lives inside `run()` and resolves a single `stop`
+    future. SIGTERM, SIGINT, an embedded caller's cancellation and **the window closing** all
+    converge there; none of them adds teardown to `cli.py`. Same discipline as `closeView` in
+    `main.ts`. `run()` also no longer *requires* signal handlers, which is what lets it live on
+    a worker thread while the GUI keeps the main one — pywebview refuses to start anywhere else.
+  - **`rhi` diagnoses hooks, offers to install them, and never writes silently.**
+    `.claude/settings.json` is a committed file in many repositories, so editing it as a side
+    effect of "show me a graph" writes into a git working tree unasked, and merging JSON hook
+    arrays silently is how someone loses a hook. `--doctor` reads **both** `~/.claude` and the
+    project's file, because Claude Code merges them — a globally installed hook really does
+    fire, and a doctor that ignored it would report a failure that does not exist. One line of
+    its report carries a settings path and the command it found *together*, so it answers
+    "which file?". **The failure mode it exists for is rot, not absence:** a stale absolute path
+    fails *louder and worse* than a missing hook — it is a blocking error on every tool call,
+    degrading the agent session rather than the graph, which is exactly what this repository's
+    own three settings files did until they were fixed during this work.
+- **The window is a strategy, and the choice is pure.** `window.choose_window_backend(platform,
+  available, requested)` answers `webview` / `app_browser` / `none` with availability injected,
+  so no test needs a display. The framing "pywebview vs Tauri vs Go-webview" is **wrong**: on
+  Linux all three bind the *same* WebKitGTK, so changing the shell's language retires no
+  rendering risk at all. Only a Chromium engine is a different answer, which is why app-mode
+  browser is a first-class fallback rather than an improvisation. `PREFERENCE_BY_PLATFORM` is
+  the one table a spike result may edit; nothing else changes. The strategy takes
+  `(url, on_closed, close_requested)` and **nothing else** — no token, by parameter or by
+  import, asserted over the module's AST the way "no shiki outside `highlight.ts`" is. It needs
+  none: the daemon injects the token into the `index.html` it serves, so a webview issuing
+  `GET /` from loopback inherits it exactly as a browser does, and a window that *accepted* one
+  would be a second place a credential lives. `close_requested` is a `threading.Event` rather
+  than a returned handle because a strategy blocks until its window is gone — it would only
+  return after the thing you wanted a handle to was dead.
+- **Packaging: a `.deb` built here and inspected, and a Homebrew formula that no one has run.**
+  `packaging/build-deb.sh` produces the package and writes nothing into the checkout. The
+  vendored venv holds **`websockets` and nothing else** (1.4 MB, `--system-site-packages`), so
+  `python3-watchdog` and `python3-gi` come from the distribution and keep its security updates.
+  `websockets` must be vendored and `watchdog` must not: `websockets/asyncio/` has **0 files in
+  12.0 and 8 in 13.0** (measured by unpacking the wheels) while noble ships 10.4, whereas the
+  whole suite is green on `watchdog==3.0.0` and the watcher imports only three names that 3.0
+  has. `git` is **Recommends, not Depends** — `gitcmd.py` answers `None` without it and only the
+  diff and status panels go quiet. **The two commands split along the doctrine's own line:**
+  `/usr/bin/rhi-hook` is `#!/usr/bin/python3` and reaches the sources at
+  `/usr/lib/rhizome-graph/` with one `sys.path` insert, so the hot path never pays a venv's
+  import cost and keeps working if the venv is rebuilt or deleted; `/usr/bin/rhi` names the
+  vendored interpreter, because the daemon imports `websockets.asyncio.server`. The Python
+  sources are installed as plain files *outside* the venv precisely so that split is possible.
+  **They ship byte-compiled, in `unchecked-hash` mode, and both halves of that matter.**
+  `/usr/lib` is unwritable to the user whose agent fires the hook, so without a shipped `.pyc`
+  the interpreter recompiles on *every tool call* and can never cache the result: measured at
+  41.1 ms against 37.2 ms per call, which is 17% of our own import cost above a 18.4 ms bare
+  interpreter start. And the default timestamp mode would have been worse than useless here —
+  `dpkg` stamps mtimes from the archive while source and bytecode are stamped by different
+  build steps, so the `.pyc` is silently discarded and the cache rewrite into root-owned
+  `/usr/lib` silently fails, leaving a package that recompiles every time *while still
+  containing bytecode*. Checked-hash re-hashes the whole source on every import to detect edits
+  to a dpkg-managed file, which is `dpkg -V`'s job and not the agent loop's. The `compileall`
+  sits after the build script strips `*.py[co]` and before `du` computes `Installed-Size`;
+  at that moment the staging tree holds only the two source trees, so the venv is never
+  compiled — deliberately, since the daemon starts once per session and the hook does not.
+  The formula's `sha256` is deliberately all zeros with a comment: there is no release, so no
+  true digest exists, and a plausible-looking wrong one reads as done and never gets revisited.
 - **The observed root is no longer a boot constant.** `ctrl+L` in the page opens a bar that
   swaps it: the WebSocket, once broadcast-only, now also accepts `{"kind":"complete"}` (the
   browser cannot read the disk, so the daemon answers tab-completion) and
@@ -502,13 +602,58 @@ Web MVP implemented and verified end-to-end (TDD).
   thin ring, which is precisely the shape it exists not to be. If that is what a real screen
   shows, thicken the inner stroke or rasterise the texture larger; the tests pin only
   relations between the radii, never their values, so retuning is free.
+- **Not yet verified, for the installed application.** Everything below is green in the suite
+  and unproven on a real machine. It is grouped by what would settle it, because the first
+  group settles most of the rest.
+  - **The spike, which gates the window's default.** `tools/webview_spike.py` on a real Linux
+    desktop session (X11 *and* Wayland) and on macOS, against the running application rather
+    than a synthetic demo: WebGL2 present, hardware vs software renderer, a float/half-float
+    buffer for `UnrealBloomPass`, p95 frame time at ~1500 nodes, whether
+    `WEBKIT_DISABLE_DMABUF_RENDERER=1` is needed, and `devicePixelRatio` against the same page
+    in a browser. Its result edits `PREFERENCE_BY_PLATFORM` and the two packages' dependency
+    lists, and nothing else. **This host is a tty** — no `DISPLAY`, no `WebKit2` namespace — so
+    no agent here can run it.
+  - **That a real window opens and a real window dies.** Not one line of `open_webview` has
+    ever executed. Specifically: that `webview.start()` returning *is* the window closing; that
+    `destroy()` from a worker thread tears down a WebKitGTK or WKWebView window; that
+    `close_requested` is honoured at all under a native toolkit loop (the wakeup-fd path exists
+    precisely because a Python signal handler may never run there, and neither path is proven);
+    and that a Chromium in app mode exits on `terminate()` leaving no orphan and no profile
+    directory. Snap confinement is a known suspect: `/snap/bin/chromium` with a
+    `--user-data-dir` under `/tmp` may be refused, in which case the profile moves under `$HOME`.
+  - **That anything is ever installed.** `dpkg -i` needs root, so no maintainer script has run,
+    no dependency has been resolved by apt, `/usr/bin/rhi` has never executed from the prefix it
+    was built for, and upgrade/removal/purge is untested. `debhelper` and `lintian` are missing
+    here, so `debian/rules` is never exercised as a build entry point and Debian policy
+    conformance is entirely unchecked. Nothing Homebrew has been executed — not `brew audit`,
+    not `brew install`, not `brew test`; the formula is text that passes text assertions and has
+    not even been parsed as Ruby. And `pip install` of the wheel into a clean environment is
+    untested, so the console-script branch of `assets.hook_command()` is dead code as measured.
+  - **That the hooks it writes actually work.** No Claude Code session has been started against
+    a file `--install-hooks` produced, so nothing has put an attributed agent on the graph
+    through the packaged `rhi-hook`. The doctor's central rule — that a hook in `~/.claude`
+    alone fires for a session in another project — rests on Claude Code's merge behaviour and is
+    asserted from documentation, not measured. A near-JSON settings file (a trailing comma, a
+    `//` comment an editor tolerates) is treated as malformed and refused; correct by doctrine,
+    but whether that is the common real-world shape is unmeasured.
+  - **Smaller, and each with a named suspicion.** `web/dist` staleness is invisible to the build
+    — it copies whatever is in the checkout, the same hazard `start.sh` has when node is missing.
+    The doctor's report puts an absolute settings path and a command on one line deliberately,
+    which will wrap on a narrow terminal (only ever seen at 100+ columns). `rhi --doctor` is
+    pinned to bind nothing, but that a *live* daemon is undisturbed by it is not. And the
+    `NO_BACKEND_NOTE` on a headless machine is the one behaviour here no test demanded — whether
+    it reads as helpful or as noise is a judgement nobody has made on a real terminal.
 
-Run: `RHIZOME_PROJECT_ROOT=/path/to/observed ./start.sh`. Point the root at the project
-you want to *watch*, not at `rhizome-graph` — or start anywhere and switch with `ctrl+L` in the
-page (the switch is global: one daemon watches one root, so every viewer follows). Install attribution by copying the `hooks` block
-from `config/settings.json` into the observed project's `.claude/settings.json` — hook changes
-only apply to sessions started afterwards. Deps: `pip install -e '.[daemon]'`; the hook needs
-nothing. Rebuilding `web/dist` (or running vitest/tsc) needs Node 18+ — `start.sh` silently
+Run, installed: `rhi /path/to/observed` — opens a window, serves the same page at
+`http://localhost:8080`, and ends everything when the window closes. `rhi --no-window` for a
+headless host, `--doctor` to check the hooks without starting anything, `--install-hooks` to
+write them. Run, from a checkout: `RHIZOME_PROJECT_ROOT=/path/to/observed ./start.sh`. Point
+the root at the project you want to *watch*, not at `rhizome-graph` — or start anywhere and
+switch with `ctrl+L` in the page (the switch is global: one daemon watches one root, so every
+viewer follows). Install attribution with `rhi --install-hooks`, which never writes without
+being asked, or by copying the `hooks` block from `config/settings.json` into the observed
+project's `.claude/settings.json` by hand — either way, hook changes only apply to sessions
+started afterwards. Deps: `pip install -e '.[daemon]'`; the hook needs nothing. Rebuilding `web/dist` (or running vitest/tsc) needs Node 18+ — `start.sh` silently
 serves a stale `dist` when node is missing, so a front-end change can look like it did
 nothing. Debug an empty screen with `RHIZOME_DEBUG_LOG` (records hook *failures*) or
 `RHIZOME_TRACE_LOG` (records every raw payload, which is how the shape of the hook JSON

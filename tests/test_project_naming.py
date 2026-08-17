@@ -68,13 +68,57 @@ def test_the_python_package_is_importable_under_its_new_name() -> None:
 #: Every authored tree where a configuration variable can hide. A name that is
 #: absent from disk is skipped, which is why `test_language_policy` pins that
 #: the package directory is really being read.
-SCANNED_DIRS = ("rhizome_graph", "daemon", "hooks", "web/src", "config", ".claude")
+#: The packaging trees are here for a reason of their own: they spell the
+#: project name more often than any source file does -- the package name, the
+#: install prefix, the vendored virtualenv, both console scripts and the ingest
+#: socket all appear as literals -- so a rename that stops short of them leaves
+#: a package that installs under the old name and a hook that writes to the old
+#: socket.
+SCANNED_DIRS = (
+    "rhizome_graph",
+    "daemon",
+    "hooks",
+    "web/src",
+    "config",
+    ".claude",
+    "debian",
+    "Formula",
+    "packaging",
+)
 SCANNED_FILES = ("start.sh", "run.sh", "pyproject.toml")
-SCANNED_SUFFIXES = {".py", ".ts", ".js", ".css", ".html", ".sh", ".json", ".toml", ".md"}
+
+#: `""` covers the extensionless maintainer files under `debian/`; without it,
+#: naming that directory above walks it and keeps nothing. `.rb` is Homebrew's.
+#: See `tests/test_packaging_policy_scope.py`, which pins both.
+SCANNED_SUFFIXES = {
+    "",
+    ".py",
+    ".ts",
+    ".js",
+    ".css",
+    ".html",
+    ".sh",
+    ".json",
+    ".toml",
+    ".md",
+    ".rb",
+}
+
+#: Build output, not authored sources: `tmp`, `files` and `.debhelper` are what
+#: a Debian build drops inside `debian/`.
+GENERATED_DIRS = {"node_modules", "dist", "__pycache__", "tmp", "files", ".debhelper"}
 
 #: The old environment-variable prefix, spelled in two halves so that this file
 #: cannot itself be mistaken for an occurrence by a grep over the rename.
 OLD_PREFIX = "GRAPH" + "AGENTS_"
+
+#: The old *directory* name -- the checkout this project used to live in, which
+#: is a different way for the rename to survive than the variables above: not a
+#: name read from the environment but an absolute path frozen into a settings
+#: file. Split in halves for the same reason as OLD_PREFIX. The one deliberate
+#: literal spelling in this repository is the negative assertion for the page's
+#: title below, in a file `_authored_files` never reads.
+OLD_DIRECTORY = "graph" + "-agents"
 
 
 def _authored_files() -> list[Path]:
@@ -87,7 +131,7 @@ def _authored_files() -> list[Path]:
         for path in sorted(base.rglob("*")):
             if not path.is_file() or path.suffix not in SCANNED_SUFFIXES:
                 continue
-            if any(part in {"node_modules", "dist", "__pycache__"} for part in path.parts):
+            if any(part in GENERATED_DIRS for part in path.parts):
                 continue
             found.append(path)
     return found
@@ -108,6 +152,28 @@ def test_no_source_still_reads_the_old_environment_variables() -> None:
     ]
 
     assert offences == [], "old environment-variable prefix still read at:\n" + "\n".join(
+        offences
+    )
+
+
+def test_no_configuration_still_points_at_the_old_project_directory() -> None:
+    """A hook command is an absolute path, and the rename moved the directory.
+
+    The variable scan above did not cover this: `.claude/settings.json` and
+    `config/settings.json` name the hook script by absolute path, and a path
+    under the old checkout is a file that is simply not there. It fails on every
+    tool call, loudly, which is the one thing the adapter is meant never to do
+    -- and it fails without any of the naming assertions noticing, because the
+    only thing they looked at was the tail of the path.
+    """
+    offences = [
+        f"{path.relative_to(REPO_ROOT)}:{number}"
+        for path in _authored_files()
+        for number, line in enumerate(path.read_text(encoding="utf-8").splitlines(), 1)
+        if OLD_DIRECTORY in line
+    ]
+
+    assert offences == [], "old project directory name still referenced at:\n" + "\n".join(
         offences
     )
 

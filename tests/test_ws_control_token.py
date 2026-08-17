@@ -109,9 +109,32 @@ def project(tmp_path: Path) -> Path:
 
 @pytest.fixture()
 def session(monkeypatch: pytest.MonkeyPatch, project: Path) -> Session:
+    """A daemon with the ordinary gate: loopback only, and its own token.
+
+    The `delenv` calls are belt and braces rather than setup. The daemon no
+    longer consults the environment for either condition -- both are handed to
+    it, from the `Settings` its entry point built (`tests/test_cli_settings.py`
+    specifies how the variables become that value) -- and these lines are what
+    would catch a regression that quietly started reading them again.
+    """
     monkeypatch.delenv("RHIZOME_ALLOW_REMOTE_CONTROL", raising=False)
     monkeypatch.delenv("RHIZOME_TOKEN", raising=False)
     return Session(str(project), str(project))
+
+
+@pytest.fixture()
+def remote_session(monkeypatch: pytest.MonkeyPatch, project: Path) -> Session:
+    """A daemon deliberately opted out of the address check.
+
+    What `RHIZOME_ALLOW_REMOTE_CONTROL=1` used to produce, now stated as the
+    parameter it produces. The opt-in is the same decision made in the same
+    place -- the environment reaches here through `settings_from`, which
+    `tests/test_cli_settings.py` pins -- and the tests below assert exactly what
+    they asserted when they set the variable themselves.
+    """
+    monkeypatch.delenv("RHIZOME_ALLOW_REMOTE_CONTROL", raising=False)
+    monkeypatch.delenv("RHIZOME_TOKEN", raising=False)
+    return Session(str(project), str(project), allow_remote=True)
 
 
 # --- 1. parse_command carries the token through ----------------------------
@@ -175,13 +198,23 @@ def test_two_daemons_do_not_share_a_token(
     ).token
 
 
-def test_the_environment_may_pin_the_token(
+def test_the_token_may_be_pinned_from_outside(
     monkeypatch: pytest.MonkeyPatch, project: Path
 ):
     # So a wrapper script or a second tool can be told what the daemon expects.
-    monkeypatch.setenv("RHIZOME_TOKEN", "chosen-by-hand")
+    # This used to set RHIZOME_TOKEN and read it back off the Session, which
+    # measured two things at once: that a pinned token is honoured, and that the
+    # Session is the thing that reads the environment. The second is no longer
+    # true by design -- `main()` is the only reader -- so the variable's half is
+    # specified where it now happens
+    # (`tests/test_cli_settings.py::test_the_token_may_be_pinned_by_the_environment`)
+    # and this keeps the half that is about the daemon: a token chosen elsewhere
+    # is the token the gate will demand, not a minted one shadowing it.
+    monkeypatch.delenv("RHIZOME_TOKEN", raising=False)
 
-    assert Session(str(project), str(project)).token == "chosen-by-hand"
+    assert Session(str(project), str(project), token="chosen-by-hand").token == (
+        "chosen-by-hand"
+    )
 
 
 # --- 3. the gate: a command needs the token --------------------------------
@@ -275,26 +308,25 @@ def test_the_right_token_does_not_let_a_remote_peer_through(session: Session):
 
 
 def test_a_wrong_token_is_refused_even_with_remote_control_opened_up(
-    monkeypatch: pytest.MonkeyPatch, session: Session
+    remote_session: Session
 ):
-    # `RHIZOME_ALLOW_REMOTE_CONTROL=1` opts out of the address check, not out of
-    # authentication.
-    monkeypatch.setenv("RHIZOME_ALLOW_REMOTE_CONTROL", "1")
+    # Opting out of the address check is not opting out of authentication.
     client = _FakeClient(_frame("file", "a.txt", "guessed-it"), host="192.168.1.50")
 
-    _run(_handle_ws_client(session.hub, session, client))
+    _run(_handle_ws_client(remote_session.hub, remote_session, client))
 
     assert "fileView" not in client.kinds()
     assert "top secret" not in "".join(client.sent)
 
 
 def test_the_opted_in_remote_peer_still_works_with_the_token(
-    monkeypatch: pytest.MonkeyPatch, session: Session
+    remote_session: Session
 ):
-    monkeypatch.setenv("RHIZOME_ALLOW_REMOTE_CONTROL", "1")
-    client = _FakeClient(_frame("file", "a.txt", session.token), host="192.168.1.50")
+    client = _FakeClient(
+        _frame("file", "a.txt", remote_session.token), host="192.168.1.50"
+    )
 
-    _run(_handle_ws_client(session.hub, session, client))
+    _run(_handle_ws_client(remote_session.hub, remote_session, client))
 
     assert "fileView" in client.kinds()
 

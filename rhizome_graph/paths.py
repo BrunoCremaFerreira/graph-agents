@@ -57,7 +57,7 @@ def resolve_root(text: str, home: str) -> str | None:
     watch the same tree.
     """
     try:
-        expanded = _expand_user(text.strip(), home)
+        expanded = expand_user(text.strip(), home)
         if not expanded:
             return None
         resolved = os.path.normpath(os.path.abspath(expanded))
@@ -80,7 +80,7 @@ def complete_dir(text: str, home: str) -> Completion:
     so repeated tabs converge instead of picking a winner arbitrarily.
     """
     try:
-        expanded = _expand_user(text, home)
+        expanded = expand_user(text, home)
         parent, prefix = os.path.split(expanded)
         matches = _matching_dirs(parent, prefix)
         if not matches:
@@ -94,12 +94,18 @@ def complete_dir(text: str, home: str) -> Completion:
         return Completion(text, [])
 
 
-def _expand_user(text: str, home: str) -> str:
+def expand_user(text: str, home: str) -> str:
     """``~`` and ``~/...`` against the *given* home, and nothing else.
 
     ``~someuser`` is deliberately left untouched rather than looked up in the
     password database: it is not a form anyone types into this field, and
     resolving it would reach outside the home the caller handed us.
+
+    Public because there must be exactly one rule for ``~`` in this program: the
+    ``ctrl+L`` bar resolves through :func:`resolve_root` and the command line
+    resolves through :func:`rhizome_graph.cli.settings_from`, and a second rule
+    is a bug waiting for the first user who types one and lands in a different
+    directory in each place.
     """
     if not home or not text.startswith("~"):
         return text

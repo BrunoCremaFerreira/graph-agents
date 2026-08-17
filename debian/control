@@ -1,0 +1,39 @@
+Source: rhizome-graph
+Maintainer: rhizome-graph contributors <brn.qi.home@gmail.com>
+Build-Depends: python3, python3-venv, python3-pip, dpkg-dev, fakeroot
+Standards-Version: 4.6.2
+Homepage: https://github.com/BrunoCremaFerreira/rhizome-graph
+Rules-Requires-Root: no
+
+Package: rhizome-graph
+Section: devel
+Priority: optional
+Architecture: any
+Depends: python3 (>= 3.12),
+ python3 (<< 3.13),
+ python3-watchdog,
+ python3-gi,
+ gir1.2-webkit2-4.1,
+ libwebkit2gtk-4.1-0
+Recommends: git
+Suggests: chromium | chromium-browser | google-chrome-stable, firefox
+Description: real-time visualizer of what each Claude Code agent is doing
+ rhizome-graph watches a project while one or more Claude Code agents work in
+ it and draws the result as a live force-directed graph in the Gource idiom:
+ one figure per agent, a beam to every file it adds, edits, deletes or reads.
+ .
+ Events arrive from two sources at once, because neither is enough alone. The
+ PostToolUse hook carries the agent id, which is the only way a change can be
+ credited to an actor, but it cannot resolve a glob or a compound shell
+ command. The filesystem watcher sees every change on disk and knows no
+ author. The daemon combines them, seeds the existing tree at boot, and serves
+ the page and its event stream over one port.
+ .
+ The bounds on python3 are not decoration. This package carries a virtualenv
+ holding one wheel, websockets, because the daemon imports
+ websockets.asyncio.server and the version Debian ships predates that module;
+ a virtualenv runs under the Python minor version it was built for and under
+ no other. Everything else comes from the distribution.
+ .
+ git is recommended rather than required: without it the diff view and the
+ uncommitted-changes panel stay quiet and the graph is untouched.

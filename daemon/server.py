@@ -48,6 +48,7 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import dataclasses
 import functools
 import ipaddress
 import json
@@ -55,6 +56,7 @@ import logging
 import mimetypes
 import os
 import signal
+import threading
 import time
 import urllib.parse
 from collections import deque
@@ -66,7 +68,18 @@ from websockets.asyncio.server import Server, ServerConnection, broadcast, serve
 from websockets.datastructures import Headers
 from websockets.http11 import Request, Response
 
+from rhizome_graph.assets import WEB_DIST_ENV, default_web_dist
+from rhizome_graph.cli import (
+    DEFAULT_HTTP_PORT,
+    DEFAULT_SOCKET_PATH,
+    DEFAULT_STATUS_INTERVAL_SECONDS,
+    Settings,
+    build_parser,
+    page_url,
+    settings_from,
+)
 from rhizome_graph.file_view import file_view
+from rhizome_graph.ipc import socket_is_live
 from rhizome_graph.normalize import (
     Event,
     actor_of,
@@ -77,13 +90,16 @@ from rhizome_graph.normalize import (
 from rhizome_graph.paths import complete_dir, resolve_root
 from rhizome_graph.repo import display_root, read_branch
 from rhizome_graph.status import git_status, status_frame
-from rhizome_graph.token import inject_token, token_from_env, token_matches
+from rhizome_graph.token import inject_token, mint_token, token_matches
 from rhizome_graph.tree import scan_tree
 
 LOGGER = logging.getLogger("rhizome_graph.daemon")
 
-DEFAULT_SOCKET_PATH = "/tmp/rhizome-graph.sock"
-DEFAULT_HTTP_PORT = 8080
+#: The defaults live in :mod:`rhizome_graph.cli` and are re-exported here, where
+#: most of the code that uses them reads. One spelling each: the command line and
+#: the daemon must not be able to disagree about what "the default port" is, and
+#: `cli.py` cannot import this module (it stays free of asyncio, websockets and
+#: watchdog so that `--help` costs nothing).
 REPLAY_BUFFER_SIZE = 200
 
 #: How long after a hook fires its agent still owns the changes the watcher
@@ -112,10 +128,18 @@ REPO_POLL_INTERVAL_SECONDS = 2.0
 #: working tree (there is no file to read that answers it -- see
 #: :mod:`rhizome_graph.status`). Sharing the branch poll's loop would drag the
 #: caption down to the slowest of the two.
-STATUS_POLL_INTERVAL_SECONDS = 3.0
+STATUS_POLL_INTERVAL_SECONDS = DEFAULT_STATUS_INTERVAL_SECONDS
 
-REPO_ROOT = Path(__file__).resolve().parent.parent
-WEB_DIST = REPO_ROOT / "web" / "dist"
+
+class IngestSocketInUseError(RuntimeError):
+    """Another daemon is already listening on the ingest socket.
+
+    Raised instead of unlinking it: the first daemon keeps its descriptor and
+    goes on serving its browser, but every hook would follow the *name* to the
+    newcomer, leaving the first window with a tree updating and nobody on
+    camera. Named so a launcher can catch exactly this and say "already
+    running" rather than print a traceback.
+    """
 
 
 class EventHub:
@@ -521,15 +545,32 @@ class Session:
     of ``~`` -- both in the field and in the HUD caption -- is the caller's
     decision, and testable without a fixed ``$HOME``.
 
-    ``token`` is the secret every inbound command must carry, minted here
-    because the session is what a command drives. It is injected into the page
-    this daemon serves, so the page it belongs to can send it and nobody else
-    can (see :mod:`rhizome_graph.token`).
+    ``token`` and ``allow_remote`` are the gate's two conditions, and they arrive
+    together because they are one decision made of two parts: the token every
+    inbound command must carry (injected into the page this daemon serves, so the
+    page it belongs to can send it and nobody else can -- see
+    :mod:`rhizome_graph.token`), and whether the peer's address is checked at all.
+    Splitting them across two mechanisms is how one of them gets forgotten.
+
+    Both are given rather than sniffed: a `Session` whose token depends on which
+    shell started the process is configuration no caller can see or override.
+    ``token=None`` -- the argument omitted -- mints one, because a session must
+    always have one; ``token=""`` is honoured as the empty token, which
+    :func:`rhizome_graph.token.token_matches` refuses outright. Fail closed:
+    a daemon that ended up without a secret refuses every command rather than
+    accepting every tokenless one.
     """
 
-    def __init__(self, project_root: str, home: str) -> None:
+    def __init__(
+        self,
+        project_root: str,
+        home: str,
+        token: str | None = None,
+        allow_remote: bool = False,
+    ) -> None:
         self.home = home
-        self.token = token_from_env(os.environ)
+        self.token = mint_token() if token is None else token
+        self.allow_remote = allow_remote
         self.root = os.path.normpath(os.path.abspath(project_root))
         self.hub = EventHub(project_root=self.root)
         self._watcher = None
@@ -685,10 +726,6 @@ async def _send(websocket: ServerConnection, frame: dict) -> None:
         await websocket.send(json.dumps(frame, separators=(",", ":")))
 
 
-def _allow_remote_control() -> bool:
-    return os.environ.get("RHIZOME_ALLOW_REMOTE_CONTROL", "") not in ("", "0")
-
-
 def _peer_host(websocket: ServerConnection) -> str:
     """The peer's address, or ``""`` when it cannot be determined."""
     try:
@@ -724,7 +761,7 @@ async def _handle_ws_client(
             command = parse_command(raw if isinstance(raw, str) else raw.decode())
             if command is None or session is None:
                 continue
-            if not control_allowed(_peer_host(websocket), _allow_remote_control()):
+            if not control_allowed(_peer_host(websocket), session.allow_remote):
                 await _send(
                     websocket,
                     {
@@ -913,36 +950,96 @@ def _start_watcher(hub: EventHub, project_root: str):
     return watcher
 
 
-def _status_poll_interval() -> float:
-    """How often to re-read the working tree, from the environment.
+def _install_stop_signals(stop: asyncio.Future) -> None:
+    """Let SIGINT/SIGTERM resolve `stop`, wherever that is possible at all.
 
-    ``RHIZOME_STATUS_INTERVAL`` is an escape hatch, not a tuning knob: on a
-    huge repository on a slow disk `git status` is expensive enough that somebody
-    watching may want it rarer, or off entirely. Zero or negative means off, and
-    then no task is created at all -- a loop that only sleeps is still a loop to
-    reason about. Garbage falls back to the default rather than crashing the
-    daemon at boot over a typo.
+    Signals are a main-thread facility by definition: off it,
+    `add_signal_handler` reaches `signal.set_wakeup_fd` and raises
+    `RuntimeError` (`NotImplementedError` is the Windows failure). Neither may
+    take `run()` down, because an embedded daemon -- a GUI on the main thread,
+    asyncio on a worker -- is stopped by cancelling the task running `run()`,
+    which unwinds through exactly the same teardown the signal path uses. The
+    command line keeps its handlers; nothing else requires them.
     """
-    raw = os.environ.get("RHIZOME_STATUS_INTERVAL", "").strip()
-    if not raw:
-        return STATUS_POLL_INTERVAL_SECONDS
-    try:
-        return float(raw)
-    except ValueError:
-        LOGGER.warning(
-            "RHIZOME_STATUS_INTERVAL=%r is not a number; using %.1fs",
-            raw,
-            STATUS_POLL_INTERVAL_SECONDS,
-        )
-        return STATUS_POLL_INTERVAL_SECONDS
+    if threading.current_thread() is not threading.main_thread():
+        return
+    loop = asyncio.get_running_loop()
+    for sig in (signal.SIGINT, signal.SIGTERM):
+        with contextlib.suppress(NotImplementedError, RuntimeError):
+            loop.add_signal_handler(
+                sig, lambda: stop.done() or stop.set_result(None)
+            )
 
 
-async def run(
-    socket_path: str,
-    http_port: int,
-    project_root: str,
-) -> None:
-    session = Session(project_root=project_root, home=os.path.expanduser("~"))
+@dataclasses.dataclass(frozen=True)
+class Readiness:
+    """What a caller is told, once, when this daemon is actually serving.
+
+    Two fields, and deliberately not the :class:`Settings` that produced them.
+
+      * ``url`` -- the page, spelled the way a browser accepts it. Produced by
+        the thing that did the binding, because the port may have moved and the
+        bind address may be a wildcard nothing can be pointed at; a launcher that
+        re-derives it is a launcher that can advertise an address it does not
+        serve. A bare origin: no query, no fragment, so nothing can be smuggled
+        to a window through it.
+      * ``stop`` -- how to end this daemon, from any thread. It resolves the same
+        future SIGINT and SIGTERM resolve, so a window closing runs the one
+        teardown that already exists instead of growing a second one outside.
+
+    The control token is absent on purpose. It lives in the `index.html` this
+    daemon serves, which a window inherits by fetching the page; handing it to
+    every window backend that will ever be written would be a second place the
+    credential lives, for no purpose at all.
+    """
+
+    url: str
+    stop: Callable[[], None]
+
+
+def _stop_handle(stop: asyncio.Future) -> Callable[[], None]:
+    """A thread-safe, idempotent way to resolve `stop`.
+
+    Thread-safe because a GUI toolkit owns the main thread and calls back from
+    it, never from the event loop. Idempotent because two triggers racing --
+    Ctrl-C while the window is already closing -- is an ordinary Tuesday, and
+    `InvalidStateError` out of a loop callback is a traceback nobody can act on.
+    """
+    loop = asyncio.get_running_loop()
+
+    def resolve() -> None:
+        if not stop.done():
+            stop.set_result(None)
+
+    def request_stop() -> None:
+        # A loop that has already closed is a daemon that has already stopped,
+        # which is what the caller was asking for.
+        with contextlib.suppress(RuntimeError):
+            loop.call_soon_threadsafe(resolve)
+
+    return request_stop
+
+
+async def run(settings: Settings, ready: Callable[[Readiness], None] | None = None) -> None:
+    """One daemon, described entirely by the value it is handed.
+
+    Nothing below reads the process environment: what this instance is -- its
+    root, its addresses, its token, its poll interval, the page it serves -- is
+    the argument. That is what lets a second front door configure a daemon from a
+    flag, and what lets two of them differ in one process.
+
+    `ready`, when there is one, is called exactly once, from inside, at the one
+    moment both listeners are accepting -- and never at all when the start is
+    refused. Optional because `python -m daemon.server` has nobody to tell.
+    """
+    socket_path = settings.socket_path
+    http_port = settings.port
+    session = Session(
+        project_root=settings.root,
+        home=os.path.expanduser("~"),
+        token=settings.token,
+        allow_remote=settings.allow_remote_control,
+    )
     hub = session.hub
 
     # Caption, status and seed before the listener opens, so the first client to
@@ -954,7 +1051,13 @@ async def run(
     hub.seed_paths(seeded)
     LOGGER.info("seeded %d existing files from %s", len(seeded), session.root)
 
+    if socket_is_live(socket_path):
+        raise IngestSocketInUseError(
+            f"another rhizome-graph daemon is listening on {socket_path}"
+        )
     if os.path.exists(socket_path):
+        # Nothing answered there: a socket file a crashed daemon left behind,
+        # which is what these two lines were written for.
         os.unlink(socket_path)
 
     ingest_server = await asyncio.start_unix_server(
@@ -964,14 +1067,18 @@ async def run(
     session.start_watcher()
     repo_poll = asyncio.create_task(session.poll_repo())
 
-    status_interval = _status_poll_interval()
+    status_interval = settings.status_interval
     status_poll = (
         asyncio.create_task(session.poll_status(status_interval))
         if status_interval > 0
         else None
     )
 
-    static_root: Path | None = WEB_DIST if WEB_DIST.is_dir() else None
+    # The override travels as a field, so the search is run over the value this
+    # daemon was configured with instead of over whatever the process was
+    # started with. Empty means "look where you are installed", which is
+    # `assets.py`'s question to answer, not this one's.
+    static_root: Path | None = default_web_dist({WEB_DIST_ENV: settings.web_dist})
     if static_root is None:
         LOGGER.info(
             "web/dist not found; serving WebSocket only "
@@ -981,7 +1088,11 @@ async def run(
         LOGGER.info("serving %s at http://localhost:%d", static_root, http_port)
 
     ws_server = await start_server(
-        hub, host="", port=http_port, static_root=static_root, session=session
+        hub,
+        host=settings.host,
+        port=http_port,
+        static_root=static_root,
+        session=session,
     )
 
     LOGGER.info(
@@ -989,14 +1100,21 @@ async def run(
     )
 
     stop = asyncio.get_running_loop().create_future()
-    for sig in (signal.SIGINT, signal.SIGTERM):
-        with contextlib.suppress(NotImplementedError):
-            asyncio.get_running_loop().add_signal_handler(
-                sig, lambda: stop.done() or stop.set_result(None)
-            )
+    _install_stop_signals(stop)
 
     try:
         async with ingest_server, ws_server:
+            if ready is not None:
+                # Here and nowhere earlier: the ingest socket and the HTTP
+                # listener are both accepting, so the news is true at the moment
+                # it is handed over. Inside the `async with`, so a callback that
+                # raises still leaves through the teardown below.
+                ready(
+                    Readiness(
+                        url=page_url(settings.host, http_port),
+                        stop=_stop_handle(stop),
+                    )
+                )
             with contextlib.suppress(asyncio.CancelledError):
                 await stop
     finally:
@@ -1011,24 +1129,49 @@ async def run(
         os.unlink(socket_path)
 
 
+#: What ``python -m daemon.server`` binds when nobody named an address: every
+#: interface, as it always has. This entry point is a repository you clone and
+#: start deliberately, and binding widely is how a colleague on the LAN or a
+#: container's gateway reaches a graph you meant to share. An installed command
+#: started casually defaults to loopback instead
+#: (:data:`rhizome_graph.cli.DEFAULT_HOST`); whether the two should converge is a
+#: security judgement, not a side effect of moving the value into a `Settings`.
+MODULE_ENTRY_HOST = ""
+
+
 def main() -> None:
+    """The command line's front door, and the only place air becomes a value.
+
+    Every environment variable this daemon honours is read here, once, and
+    turned into the `Settings` that configures everything below. `start.sh`
+    keeps working exactly as it does, and a second front door can build the same
+    value from a flag.
+    """
+    args = build_parser().parse_args()
+    settings = settings_from(args, os.environ, os.getcwd())
+    if args.host is None and not os.environ.get("RHIZOME_HOST", ""):
+        settings = dataclasses.replace(settings, host=MODULE_ENTRY_HOST)
+
     logging.basicConfig(
-        level=os.environ.get("RHIZOME_LOG_LEVEL", "INFO"),
+        level=settings.log_level,
         format="%(asctime)s %(name)s %(levelname)s %(message)s",
     )
-    socket_path = os.environ.get("RHIZOME_SOCKET", DEFAULT_SOCKET_PATH)
-    http_port = int(os.environ.get("RHIZOME_HTTP_PORT", DEFAULT_HTTP_PORT))
-    project_root = os.environ.get("RHIZOME_PROJECT_ROOT", os.getcwd())
 
     if "RHIZOME_WS_PORT" in os.environ:
         LOGGER.warning(
             "RHIZOME_WS_PORT is obsolete and ignored: the WebSocket now "
             "shares the HTTP port (RHIZOME_HTTP_PORT=%d).",
-            http_port,
+            settings.port,
         )
 
-    with contextlib.suppress(KeyboardInterrupt):
-        asyncio.run(run(socket_path, http_port, project_root))
+    try:
+        with contextlib.suppress(KeyboardInterrupt):
+            asyncio.run(run(settings))
+    except IngestSocketInUseError as exc:
+        # Anticipated, so it is reported rather than raised: starting a second
+        # daemon is the ordinary way this fails, and nobody reads twenty frames
+        # of asyncio internals and concludes that one is already running.
+        raise SystemExit(f"{exc}. Stop it, or set RHIZOME_SOCKET elsewhere.")
 
 
 if __name__ == "__main__":

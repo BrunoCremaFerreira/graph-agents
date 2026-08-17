@@ -6,10 +6,12 @@ distribution package under `/usr/lib` or a virtualenv anywhere all miss it, and
 missing it is silent -- the daemon serves the WebSocket alone and reports itself
 healthy while the browser shows a blank page.
 
-So the search is a list, and it is split in two. :func:`web_dist_candidates`
-says where to look and in which order, with no filesystem in it; then
-:func:`find_web_dist` says which of those is actually installed, with no policy
-in it. Fused, neither could be examined without faking the other.
+So the search is a list, and it is split in three. :func:`web_dist_candidates`
+says where to look and in which order, with no filesystem in it;
+:func:`find_web_dist` walks that order, with no policy in it; and the policy
+itself is a predicate handed in -- :func:`is_directory` by default,
+:func:`holds_page` for the daemon. Fused, none of them could be examined without
+faking the others.
 
 The hook command is the same question asked about the other artefact this
 installation owns -- "how does somebody else's `.claude/settings.json` run our
@@ -27,12 +29,16 @@ from __future__ import annotations
 import os
 import shutil
 import sys
-from collections.abc import Iterable, Mapping
+from collections.abc import Callable, Iterable, Mapping
 from pathlib import Path
 
 #: The escape hatch, read first: a packager or a developer whose layout nobody
 #: anticipated says so here rather than by patching Python.
 WEB_DIST_ENV = "RHIZOME_WEB_DIST"
+
+#: The file the HTTP handler appends to the static root. Its presence is what
+#: separates a built front end from a directory that merely has the right name.
+PAGE_NAME = "index.html"
 
 #: Where a distribution package installs the built assets. Absolute, and
 #: belonging to neither of the two roots the caller passes.
@@ -70,27 +76,68 @@ def web_dist_candidates(
     return candidates
 
 
-def find_web_dist(candidates: Iterable[Path]) -> Path | None:
-    """The first candidate that is a directory, or `None` if none of them is.
+def is_directory(candidate: Path) -> bool:
+    """The loosest test a candidate can be held to, and the default one.
 
     `is_dir`, not `exists`: a leftover file at one of these names is not a site
-    to serve. `None` is the documented "serve the WebSocket alone" state rather
-    than an error -- that is how `--dev` runs, with Vite hosting the front.
+    to serve.
+    """
+    return Path(candidate).is_dir()
+
+
+def holds_page(candidate: Path) -> bool:
+    """Is there a page in there? The stricter test, and the one the daemon uses.
+
+    A directory that exists and holds no `index.html` is worse than no directory
+    at all: `find_web_dist` would elect it, the daemon would report a static
+    root, and the browser would get a 404 for the page -- the silent blank page
+    this module exists to prevent, reached from a tree that merely was not
+    built. Directories of exactly that shape are what packaging placeholders and
+    half-finished builds leave behind.
+    """
+    return Path(candidate).joinpath(PAGE_NAME).is_file()
+
+
+def find_web_dist(
+    candidates: Iterable[Path],
+    accept: Callable[[Path], bool] = is_directory,
+) -> Path | None:
+    """The first candidate `accept` recognises, or `None` if none of them is.
+
+    The predicate is injected rather than fixed, and it is *inside* the loop
+    rather than applied to the answer, which is the whole point: with an empty
+    `/usr/lib/rhizome-graph/web` ahead of a good `web/dist`, a filter placed
+    after the search would answer `None` and never look at the second candidate.
+    Skipping a hollow candidate and going on is what a search means.
+
+    `None` is the documented "serve the WebSocket alone" state rather than an
+    error -- that is how `--dev` runs, with Vite hosting the front.
     """
     for candidate in candidates:
-        if Path(candidate).is_dir():
+        if accept(Path(candidate)):
             return Path(candidate)
     return None
 
 
 def default_web_dist(environ: Mapping[str, str] | None = None) -> Path | None:
-    """The installed page, searched over this installation's own layout."""
+    """The installed page, searched over this installation's own layout.
+
+    Two rules, and the second is why this is not one call to
+    :func:`find_web_dist`. A candidate this installation merely *guessed* at and
+    got wrong is skipped, so an empty `/usr/lib/rhizome-graph/web` left by a
+    half-finished install does not hide the good `web/dist` behind it. An
+    override, though, is obeyed or refused and never overruled: somebody typed
+    that path, so silently serving a different directory instead -- most likely a
+    stale checkout build -- answers a question nobody asked, and `None` is a state
+    the daemon already reports.
+    """
+    resolved = os.environ if environ is None else environ
+    override = resolved.get(WEB_DIST_ENV, "")
+    if override:
+        return Path(override) if holds_page(Path(override)) else None
     return find_web_dist(
-        web_dist_candidates(
-            os.environ if environ is None else environ,
-            PACKAGE_ROOT,
-            CHECKOUT_ROOT,
-        )
+        web_dist_candidates(resolved, PACKAGE_ROOT, CHECKOUT_ROOT),
+        holds_page,
     )
 
 

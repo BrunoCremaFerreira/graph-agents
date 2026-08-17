@@ -33,27 +33,25 @@ rhi-hook = "rhizome_graph.hook:main"
 daemon = ["websockets>=13", "watchdog>=3"]
 dev = ["pytest>=7", "websockets>=13", "watchdog>=3"]
 
-# `rhizome_graph.web` is not Python: it is the built front end, mapped in from
-# `web/dist`. It has to travel inside the import package because that is the
-# only place `rhizome_graph.assets.web_dist_candidates()` looks in an installed
-# distribution (`package_root / "web"`); shipped anywhere else -- a top-level
-# `web/`, `share/`, `data_files` -- the daemon never opens it and the page is
-# blank while everything else reports success. There is no `__init__.py` under
-# `web/dist` and there must not be one: it is data, and setuptools includes it
-# from `package-data` regardless.
+# Only the two import packages are declared here, and the built front end is
+# deliberately NOT one of them. It still ships -- inside `rhizome_graph/web/`,
+# the one place `rhizome_graph.assets.web_dist_candidates()` looks in an
+# installed distribution; shipped anywhere else (a top-level `web/`, `share/`,
+# `data_files`) the daemon never opens it and the page is blank while everything
+# else reports success. What carries it there is `setup.py`, which copies
+# `web/dist` into the build tree as package data of `rhizome_graph`.
 #
-# `web/dist` is gitignored build output, so a distribution built from a tree
-# where the front end was never built carries no page at all. That is the
-# failure `tests/test_distribution_front_end.py` exists to catch; build the
-# front end before `python -m build`.
+# It has to be done at build time and not by config, because `web/dist` is
+# gitignored build output that usually does not exist. A `packages` entry with a
+# `package-dir` pointing at it -- which is how this was written first -- makes
+# setuptools resolve that directory while it is producing *metadata*, so on a
+# clean checkout `pip install -e '.[daemon]'` and `python -m build` both die with
+# `package directory 'web/dist' does not exist`, and `start.sh` can never
+# bootstrap past its own first step. Copying instead of mapping means a missing
+# `web/dist` is simply nothing to copy. See `tests/test_distribution_metadata.py`
+# for that half and `tests/test_distribution_front_end.py` for the other.
 [tool.setuptools]
-packages = ["rhizome_graph", "daemon", "rhizome_graph.web"]
-
-[tool.setuptools.package-dir]
-"rhizome_graph.web" = "web/dist"
-
-[tool.setuptools.package-data]
-"rhizome_graph.web" = ["**/*"]
+packages = ["rhizome_graph", "daemon"]
 
 [tool.pytest.ini_options]
 minversion = "7.0"

@@ -1,0 +1,12 @@
+# The built front end in the source distribution.
+#
+# `python -m build` builds the wheel from the extracted sdist, and `setup.py`
+# copies `web/dist` into `rhizome_graph/web/` from wherever it is run -- so if the
+# archive does not carry the raw build output, the wheel made from it has no page.
+# The sdist keeps it at `web/dist/`, the same place a checkout keeps it; only the
+# wheel moves it inside the import package.
+#
+# `web/dist` is gitignored build output and usually absent. A `graft` that matches
+# nothing is a warning, not an error, which is the whole reason this can be
+# declared unconditionally.
+graft web/dist

@@ -148,6 +148,7 @@ web/src/branding.ts         # pure: APP_NAME, so the untestable renderer never s
 web/src/token.ts            # pure: read the control token, stamp it on a command frame
 web/src/*Hud.ts             # thin DOM painters: context caption, event list, attribution, search
                             # box, git status panel
+setup.py / MANIFEST.in      # the ONLY dynamic build step: copy web/dist in, IF it was built
 run.sh / start.sh           # minimal launcher / full bootstrap
 ```
 
@@ -243,7 +244,7 @@ it should do.
 
 Web MVP implemented and verified end-to-end (TDD).
 
-- **Backend** (`rhizome_graph/`, `hooks/`, `daemon/`): 1081/1081 pytest green (1100 with
+- **Backend** (`rhizome_graph/`, `hooks/`, `daemon/`): 1088/1088 pytest green (1108 with
   `RHIZOME_PACKAGE_TESTS=1`, which opts into the slow builds — one wheel, one real `.deb`).
   Hook is stdlib-only and exits 0 on garbage input. Daemon seeds the project tree at boot,
   ingests hook events on a Unix socket, watches the filesystem, and serves `web/dist` over
@@ -339,6 +340,31 @@ Web MVP implemented and verified end-to-end (TDD).
   compiled — deliberately, since the daemon starts once per session and the hook does not.
   The formula's `sha256` is deliberately all zeros with a comment: there is no release, so no
   true digest exists, and a plausible-looking wrong one reads as done and never gets revisited.
+- **The front end is copied into the distribution by `setup.py`, and it must never be a declared
+  package directory.** `package-dir = {"rhizome_graph.web" = "web/dist"}` reads as the obvious
+  static answer and is a trap: `package-dir` demands the directory exist at *metadata* time, and
+  `web/dist` is gitignored — so **no clean checkout could be installed at all**. `pip install -e
+  '.[daemon]'`, the command this file documents, died on `package directory 'web/dist' does not
+  exist`, and `start.sh` could never bootstrap past its own first step, because it pip-installs
+  before it runs `npm run build`. It shipped that way in `8a166bd` and was found by someone
+  running `./start.sh`. The fix is the one dynamic step in the build: a `build_py` subclass that
+  appends `web/dist`'s files as package data, where an absent directory is an empty list rather
+  than an error, plus `graft web/dist` in `MANIFEST.in` (a graft matching nothing is a warning).
+  `tests/test_distribution_metadata.py` is the jaw that keeps an *unbuilt* tree installable and
+  `tests/test_distribution_front_end.py` is the jaw that keeps a *built* one complete; neither
+  alone is enough, and the first one exists because the second one passing is what made the
+  regression invisible.
+- **A hollow directory is worse than a missing one, and `RHIZOME_WEB_DIST` is obeyed or refused,
+  never overruled.** `find_web_dist` still means "the first candidate that is a directory"; the
+  "must hold an `index.html`" rule arrives as an **injected predicate, inside the search rather
+  than after it** — a post-filter would answer `None` for `[hollow /usr/lib/rhizome-graph/web,
+  good web/dist]` and never try the second. And an explicit `RHIZOME_WEB_DIST` that is hollow or
+  absent now answers `None` rather than falling through to the checkout's build: the same rule
+  the port and the socket follow, **a default may be adjusted, an explicit request may not.**
+  Silently serving a stale checkout build instead of the path a packager typed answers a question
+  nobody asked. Note `start.sh` and `packaging/build-deb.sh` still test `is_dir` alone, so a
+  hollow `web/dist` would make the launcher skip the build and serve nothing — latent today
+  because nothing creates one, and worth a RED test before anything ever does.
 - **The observed root is no longer a boot constant.** `ctrl+L` in the page opens a bar that
   swaps it: the WebSocket, once broadcast-only, now also accepts `{"kind":"complete"}` (the
   browser cannot read the disk, so the daemon answers tab-completion) and

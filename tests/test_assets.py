@@ -51,7 +51,12 @@ from __future__ import annotations
 import ast
 from pathlib import Path
 
-from rhizome_graph.assets import find_web_dist, web_dist_candidates
+from rhizome_graph.assets import (
+    find_web_dist,
+    holds_page,
+    is_directory,
+    web_dist_candidates,
+)
 
 #: The distribution's own directory. Not derived from anything the caller
 #: passes, so it is spelled here as the specification spells it.
@@ -163,6 +168,66 @@ def test_nothing_installed_answers_none(tmp_path: Path) -> None:
 
 def test_no_candidates_at_all_answers_none() -> None:
     assert find_web_dist([]) is None
+
+
+# --- 2b. the injected predicate ---------------------------------------------
+#
+# The three tests above build EMPTY directories and require them to be elected,
+# and that is the contract: `find_web_dist(candidates)` means "the first
+# candidate that is a directory", which is all a search should decide. Whether a
+# directory is a *built* front end is a policy, and it arrives as a predicate --
+# `holds_page`, which `default_web_dist` passes. The reason it goes into the
+# search rather than after it is the case below: a hollow candidate must be
+# skipped, not treated as the answer.
+
+
+def test_a_candidate_the_predicate_refuses_is_passed_over(tmp_path: Path) -> None:
+    """The whole reason the predicate is injected instead of applied afterwards.
+
+    The `.deb`'s `/usr/lib/rhizome-graph/web` sits ahead of the checkout's
+    `web/dist` in the candidate order. Left empty by a half-finished install it
+    is a directory, so a filter placed on the *answer* would return `None` and
+    never look at the good one behind it.
+    """
+    hollow = tmp_path / "hollow"
+    hollow.mkdir()
+    built = tmp_path / "built"
+    built.mkdir()
+    (built / "index.html").write_text("<!doctype html>\n", encoding="utf-8")
+
+    assert find_web_dist([hollow, built], holds_page) == built
+
+
+def test_holds_page_is_what_separates_a_built_front_end_from_a_directory(
+    tmp_path: Path,
+) -> None:
+    """The predicate itself, on the three shapes a candidate comes in."""
+    built = tmp_path / "built"
+    built.mkdir()
+    (built / "index.html").write_text("<!doctype html>\n", encoding="utf-8")
+    hollow = tmp_path / "hollow"
+    hollow.mkdir()
+    decoy = tmp_path / "decoy"
+    decoy.write_text("not a directory\n", encoding="utf-8")
+
+    assert holds_page(built) is True
+    assert holds_page(hollow) is False
+    assert holds_page(decoy) is False
+
+
+def test_the_default_predicate_is_still_is_dir(tmp_path: Path) -> None:
+    """So the daemon's stricter rule cannot leak into the search's own contract.
+
+    `is_directory` is the documented default, and the tests above rely on it
+    without naming it. Named once here, so that changing the default breaks a
+    test that says why rather than three that look like they are about something
+    else.
+    """
+    hollow = tmp_path / "hollow"
+    hollow.mkdir()
+
+    assert find_web_dist([hollow]) == hollow
+    assert is_directory(hollow) is True
 
 
 # --- 3. purity --------------------------------------------------------------

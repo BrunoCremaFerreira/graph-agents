@@ -56,6 +56,7 @@ from websockets.asyncio.client import connect
 
 import daemon.server as server
 from daemon.server import EventHub, Session, start_server
+from rhizome_graph.status import StatusEntry
 
 ROOT = "/proj"
 
@@ -504,3 +505,96 @@ def test_the_status_is_polled_every_three_seconds():
 #
 # `test_the_status_is_polled_every_three_seconds` above stays: the default is a
 # property of the daemon, not of the knob.
+
+
+# --- 7. An abandoned root's answer never reaches the panel ------------------
+#
+# `publish_status` reads `self.root` at the moment of the call (section 4), but
+# the fork it starts there outlives the read: `git status` is allowed five
+# seconds, and a `ctrl+L` switch landing inside that window used to have its
+# fresh frame overwritten by the answer of the project the user just left. The
+# panel then lists paths that do not exist under the new root, and every one of
+# them is a row the page invites you to click -- `resolve_inside` refuses it, so
+# the click answers with an error about a file the panel is showing.
+#
+# The drop is silent on purpose: the switch's own `publish_status` has already
+# published the right frame, or is about to.
+
+STALE = [StatusEntry("gone.txt", "modified")]
+
+
+def _git_status_switching_root(session: Session, new_root: str, result):
+    """A `git status` that answers about a root the session no longer observes."""
+
+    async def fake(root, *args, **kwargs):
+        session.root = new_root
+        return result
+
+    return fake
+
+
+def test_a_status_computed_for_a_root_that_is_no_longer_observed_is_discarded(
+    tmp_path: Path, make_session, monkeypatch: pytest.MonkeyPatch
+):
+    async def scenario():
+        watched = tmp_path / "watched"
+        watched.mkdir()
+        session = make_session(watched, tmp_path)
+        session.hub.set_status(DIRTY)
+        monkeypatch.setattr(
+            server,
+            "git_status",
+            _git_status_switching_root(session, "/elsewhere", STALE),
+            raising=False,
+        )
+
+        await session.publish_status()
+
+        assert _statuses(session.hub) == [DIRTY]
+
+    _run(scenario())
+
+
+def test_a_status_computed_for_the_root_still_observed_is_published(
+    tmp_path: Path, make_session, monkeypatch: pytest.MonkeyPatch
+):
+    # The guard must cost the ordinary poll nothing: the root has not moved, so
+    # the answer is about the project on screen and belongs in the panel.
+    async def scenario():
+        watched = tmp_path / "watched"
+        watched.mkdir()
+        session = make_session(watched, tmp_path)
+
+        async def fake(root, *args, **kwargs):
+            return [StatusEntry("a.txt", "modified")]
+
+        monkeypatch.setattr(server, "git_status", fake, raising=False)
+
+        await session.publish_status()
+
+        assert _statuses(session.hub) == [DIRTY]
+
+    _run(scenario())
+
+
+def test_a_status_query_that_raises_still_releases_the_in_flight_flag(
+    tmp_path: Path, make_session, monkeypatch: pytest.MonkeyPatch
+):
+    # Left set, the flag would make `poll_status` skip every round for the life
+    # of the daemon, and the panel would freeze on its last frame in silence.
+    async def scenario():
+        watched = tmp_path / "watched"
+        watched.mkdir()
+        session = make_session(watched, tmp_path)
+
+        async def boom(root, *args, **kwargs):
+            raise RuntimeError("git blew up")
+
+        monkeypatch.setattr(server, "git_status", boom, raising=False)
+
+        with pytest.raises(RuntimeError):
+            await session.publish_status()
+
+        assert session._status_busy is False
+
+    _run(scenario())

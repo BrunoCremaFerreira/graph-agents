@@ -603,15 +603,29 @@ class Session:
         changes of a project nobody is watching, overwriting it seconds after
         every ``ctrl+L`` switch.
 
+        Reading it once is only half the guard, because the fork outlives the
+        read: ``git status`` is allowed seconds, and a switch landing inside that
+        window would have its fresh frame overwritten by the answer about the
+        project the user just left. Those rows are not merely stale, they are
+        clickable -- `resolve_inside` refuses a path outside the observed root,
+        so the click answers with an error about a file the panel is offering.
+        So the root is compared again once the await returns, and an answer about
+        an abandoned root is dropped. The drop is silent: the switch's own call
+        has already published the right frame, or is about to.
+
         The in-flight flag is not read here -- this always runs -- but is kept
         for :meth:`poll_status`, so a round started by a switch is visible to the
-        timer and not doubled by it.
+        timer and not doubled by it. The early return sits after the flag is
+        released, or the next poll round would be skipped for nothing.
         """
+        asked_about = self.root
         self._status_busy = True
         try:
-            entries = await git_status(self.root)
+            entries = await git_status(asked_about)
         finally:
             self._status_busy = False
+        if self.root != asked_about:
+            return
         self.hub.set_status(status_frame(entries))
 
     # -- the switch --------------------------------------------------------

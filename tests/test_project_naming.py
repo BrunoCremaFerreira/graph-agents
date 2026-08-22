@@ -121,17 +121,25 @@ OLD_PREFIX = "GRAPH" + "AGENTS_"
 OLD_DIRECTORY = "graph" + "-agents"
 
 
-def _authored_files() -> list[Path]:
-    found = [REPO_ROOT / name for name in SCANNED_FILES]
+def _authored_files(root: Path = REPO_ROOT) -> list[Path]:
+    found = [root / name for name in SCANNED_FILES]
     found = [path for path in found if path.is_file()]
     for name in SCANNED_DIRS:
-        base = REPO_ROOT / name
+        base = root / name
         if not base.is_dir():
             continue
         for path in sorted(base.rglob("*")):
             if not path.is_file() or path.suffix not in SCANNED_SUFFIXES:
                 continue
-            if any(part in GENERATED_DIRS for part in path.parts):
+            # Judged against the path RELATIVE to the root, never against
+            # `path.parts`. Those are the components of an ABSOLUTE path, and
+            # `tmp`, `dist`, `files` and `node_modules` are ordinary names for a
+            # directory *above* a checkout -- so a repository cloned into
+            # `/tmp/build/...`, which is what CI and `git worktree` do, matched
+            # on every file and discarded the whole tree. What was left was the
+            # root-level SCANNED_FILES, appended above with no filter at all:
+            # this policy silently became a green test over four files.
+            if any(part in GENERATED_DIRS for part in path.relative_to(root).parts):
                 continue
             found.append(path)
     return found

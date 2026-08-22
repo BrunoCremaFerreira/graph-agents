@@ -1,9 +1,15 @@
 # Multi-repository git status — assessment and staged plan
 
-**Status:** planned, not started. Written 2026-08-17 against `40b03f3`, with both suites green
-(1088 pytest, 990 vitest). The measurements in section 0 and the line numbers throughout are
-from that commit; re-check them if the plan is picked up much later. Nothing in section 2 has
-been confirmed yet.
+**Status:** R1-R4 implemented 2026-08-22 against `9612548`; suites green at 1177 pytest, 990
+vitest (from 1088 / 990). R5 and R6 are not started and R7 is still a note. The decisions in
+section 2 were all confirmed as written.
+
+Written 2026-08-17 against `40b03f3`. The measurements in section 0 and the line numbers
+throughout are from that commit, so they have drifted: `status.py` in particular grew the
+fan-out and every line number in section 1 is now short by roughly that much.
+
+**One thing here is wrong and was corrected during implementation** -- the per-repo cap, in
+section R2. See the note beside it.
 
 Scope: make the existing bottom-right status quadrant answer for **every git checkout found
 under the observed root** when the root itself is not inside a checkout (the `~/projects/{a,b,c}`
@@ -171,6 +177,13 @@ outside this file".
 | 1.1 | `tests/test_checkouts.py`: a container holding `a/.git` and `b/.git` and a plain `c/` answers `["a", "b"]`, sorted; today `find_checkouts` does not exist. | `checkouts.find_checkouts`, `os.scandir`-based, depth-first, prunes `tree._is_ignored_dir` names and symlinked dirs. |
 | 1.2 | RED: a root that itself holds `.git` answers `[""]` and does **not** list its children's checkouts. | the at-root branch, and the "stop on found" rule. |
 | 1.3 | RED: a checkout at depth 3 (`org/repo/.git`) is found; one at depth 4 is not. `MAX_DEPTH == 3`. | the depth bound. |
+
+> **Ambiguity resolved while implementing.** This row's `org/repo/.git` is a two-segment prefix,
+> while decision 3 justifies `MAX_DEPTH = 3` as covering `~/src/github.com/org/repo`, a
+> three-segment one. Those are different bounds. It shipped as **segments of the returned
+> prefix** -- the reading decision 3's own rationale requires, and one under which this row's
+> claim is true as well. So `github.com/org/repo` is found and `a/b/c/d` is not; the bound also
+> saves the directory open, since `c` is never scanned.
 | 1.4 | RED: 20 sibling checkouts answer 16 (`MAX_CHECKOUTS`), and a tree of 5000 empty dirs stops at `MAX_SCANNED_DIRS` without raising and without hanging. | the two budgets. |
 | 1.5 | RED: a `.git` *file* (worktree marker) counts; a symlinked directory is not followed; an unreadable directory yields fewer results, never an exception. | `os.path.exists` on the candidate, `follow_symlinks=False`, `try/except OSError` per directory. |
 | 1.6 | RED: `owning_checkout(container, container/a/src/x.py)` is `container/a`; for a path whose nearest checkout is *above* the observed root it is `None`; for a root that is itself the checkout it is that root. | `owning_checkout` over `repo.find_checkout_root`, comparing with `os.path.realpath` on **both** sides (`find_checkout_root` returns `abspath`; a root with a symlinked component would otherwise silently never match). |
@@ -225,9 +238,25 @@ choose. Round-robin makes the *existing* head-cut fair with no new constant and 
 change: the first 200 of an interleaved list carry ~200/N from each repo. Wire order is irrelevant
 to what is drawn, because `statusList.ts` sorts.
 
-A per-repo cap of `DEFAULT_MAX_ENTRIES` (200) is still applied **before** the interleave, purely as
-a memory bound: 16 repos × 5000 entries parsed every 3 s to keep 200 is garbage the loop does not
-need. It can never bind before the global cut matters, because a lone repo can still fill all 200.
+A per-repo cap is still applied **before** the interleave, purely as a memory bound: 16 repos ×
+5000 entries parsed every 3 s to keep 200 is garbage the loop does not need.
+
+> **Correction, made while implementing.** This paragraph originally set that cap at
+> `DEFAULT_MAX_ENTRIES` (200) and argued it "can never bind before the global cut matters,
+> because a lone repo can still fill all 200". That is true about *which rows are shown* and
+> false about `truncated`. `status_frame` derives truncation as `len(entries) > len(shown)`, so
+> a lone sub-repo with 300 pending changes, capped to exactly 200, computes `200 > 200` ->
+> `truncated: False`: the panel claims the list is complete over a list it cut. The same
+> repository observed directly reports `True`. One repository, two claims about completeness,
+> decided by whether the root happens to sit one directory higher -- and `truncated` exists
+> precisely because "a silently cut list reads as the whole truth".
+>
+> The cap shipped as `MAX_ENTRIES_PER_CHECKOUT = DEFAULT_MAX_ENTRIES + 1`. Carrying one entry
+> more than the frame can show keeps the signal exact in both directions: anything above the
+> global cut still exceeds it after the per-repo cap, anything at or below it is untouched. The
+> memory bound is unharmed -- 16 × 201 is the same nothing as 16 × 200. Four tests in
+> `tests/test_status_multi_repo.py` pin it, the tightest being a repository of exactly 201
+> entries, where a cap of 200 would cut away precisely the evidence of the cut.
 
 **Concurrency.** `asyncio.Semaphore(MAX_CONCURRENT_STATUS)` created **inside the call**, never at
 module level — a module-level semaphore binds to the loop that created it and breaks the moment a

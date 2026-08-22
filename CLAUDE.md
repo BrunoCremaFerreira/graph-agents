@@ -113,7 +113,8 @@ rhizome_graph/token.py      # pure: the control token — mint, compare, and inj
 rhizome_graph/hexdump.py    # pure: the xxd format, byte for byte, + is-this-binary
 rhizome_graph/gitcmd.py     # the ONE place that forks `git` (kill + close + reap on timeout)
 rhizome_graph/diff.py       # the uncommitted diff of one file (see the note in Status)
-rhizome_graph/status.py     # pure parse of `git status --porcelain -z` + the poll's frame
+rhizome_graph/checkouts.py  # pure: which checkouts sit BELOW a path (the downward question)
+rhizome_graph/status.py     # pure parse of `git status --porcelain -z`, the fan-out, the frame
 rhizome_graph/file_view.py  # what a clicked file shows: diff, else text, else hex
 rhizome_graph/cli.py        # pure: argv + environ + cwd → frozen Settings; `rhi` itself
 rhizome_graph/assets.py     # pure: where THIS installation keeps web/dist, and the hook command
@@ -244,7 +245,7 @@ it should do.
 
 Web MVP implemented and verified end-to-end (TDD).
 
-- **Backend** (`rhizome_graph/`, `hooks/`, `daemon/`): 1088/1088 pytest green (1108 with
+- **Backend** (`rhizome_graph/`, `hooks/`, `daemon/`): 1177/1177 pytest green (1197 with
   `RHIZOME_PACKAGE_TESTS=1`, which opts into the slow builds — one wheel, one real `.deb`).
   Hook is stdlib-only and exits 0 on garbage input. Daemon seeds the project tree at boot,
   ingests hook events on a Unix socket, watches the filesystem, and serves `web/dist` over
@@ -447,7 +448,7 @@ Web MVP implemented and verified end-to-end (TDD).
   outside a repository, it is not on screen at all (`visible` derives from the entry count,
   never from the `repo` flag — a permanent empty strip would report nothing). A row is a
   `modified` / `added` / `deleted` / `untracked` path, and clicking it opens the same viewer a
-  click in the graph opens, through the same `openFile` in `main.ts`. Four things are
+  click in the graph opens, through the same `openFile` in `main.ts`. Five things are
   load-bearing:
   - **It is a poll, in a task of its own** (`STATUS_POLL_INTERVAL_SECONDS`, 3 s, or
     `RHIZOME_STATUS_INTERVAL`; ≤ 0 disables it and creates no task). It cannot ride the
@@ -455,10 +456,19 @@ Web MVP implemented and verified end-to-end (TDD).
     `git add` or a `git commit` typed in a terminal touches only `.git/`, which the watcher
     drops through `tree.is_ignored`, so the list would never notice the commit that emptied it.
     A round is skipped while one is still in flight, and outside a repository nothing forks at
-    all (`find_checkout_root` answers first).
+    all (`find_checkout_root` answers first, and where it comes back empty `find_checkouts`
+    gates the forks in its place).
   - **The frame is deduped** in a replaceable slot like `_meta`, so a status that has not
     changed costs nothing on the wire, and it sits in `replay_messages()` before the seed —
     the panel is right on the first paint, not three seconds later.
+  - **An answer about an abandoned root is dropped, not published.** `publish_status` reads
+    `self.root` at call time, but the fork *outlives* the read: a `ctrl+L` landing inside that
+    window used to have its fresh frame overwritten by the answer about the project the user
+    just left. Those rows are not merely stale, they are clickable — `resolve_inside` refuses
+    them, so the click errors on a file the panel is offering. The root is compared again once
+    the await returns, and the early return sits *after* the `finally` that clears
+    `_status_busy`, or the next round is skipped for nothing. The window was one fork; with 16
+    repositories it would have been 20 s.
   - **`git status` reports paths relative to the REPOSITORY root** even when run from a
     subdirectory (measured, not assumed), while everything else here — the graph, the click,
     `resolve_inside` — speaks in paths relative to the OBSERVED root, which `ctrl+L` may have
@@ -466,6 +476,62 @@ Web MVP implemented and verified end-to-end (TDD).
   - **A deleted file had to become clickable**, so `file_view` now tries the diff *before*
     concluding "no such file": the row the user most wants to open is the one whose content is
     gone. The directory check stays ahead of the diff.
+- **The panel answers for a whole workspace, not one checkout.** Pointed at `~/projects`, which
+  is not itself a repository, the panel used to be absent entirely — and absence here reads as
+  *a clean tree*, not as *nobody looked*. Now `find_checkout_root` is asked first and **its
+  answer wins outright**: a root that is, or sits inside, a checkout behaves byte-for-byte as it
+  always did, and nothing below it is even walked, which is what makes backwards compatibility
+  a shape rather than a list of regression tests (a repository holding vendored checkouts keeps
+  its single panel). Only when that walk comes back empty does `checkouts.find_checkouts` look
+  *downward*. Six things carry it:
+  - **The downward question is a module of its own,** `rhizome_graph/checkouts.py`, and it
+    **starts no process** — a contract asserted over its parsed source, like "no shiki outside
+    `highlight.ts`". Not in `status.py` (nothing about it is the porcelain format, and the click
+    router wants the same answer without the parser) and not in `repo.py` (whose whole docstring
+    is the upward walk). Discovery is 50–100× cheaper than the forks it decides on — 0.2–0.4 ms
+    against ~20 ms, measured — and that is the *reason* it needs no cache: a `git clone` into
+    the workspace appears within one poll with no invalidation logic to get wrong. Route a `git`
+    call through this module and the trade quietly inverts.
+  - **Discovery stops at what it finds,** and is bounded four ways: `MAX_DEPTH = 3` (counted in
+    segments of the prefix, so `github.com/org/repo` is found and `a/b/c/d` is not),
+    `MAX_CHECKOUTS = 16`, `MAX_SCANNED_DIRS = 4000`, `MAX_CONCURRENT_STATUS = 4` — together a
+    20 s worst case per round. What has to be bounded is the worst case, not the measured one:
+    a home directory with a network mount in it, polled every three seconds. A checkout found is
+    never descended into (`git status` already reports a nested one as a single entry) and the
+    walk goes through `asyncio.to_thread`, for the same reason `scan_tree` does.
+  - **The merge is a round-robin interleave, and that is what keeps the existing cut fair.**
+    `status_frame` takes the first 200; over a list ordered repo-by-repo, one repository with
+    300 untracked files fills the whole cut and hides every other — the exact failure this
+    feature exists to prevent, moved one level up. A per-repo quota would have to be `200 // N`,
+    a constant that depends on N. Round-robin needs no new constant and no signature change.
+  - **The per-repo cap is `DEFAULT_MAX_ENTRIES + 1`, and the `+ 1` is the whole point.** The cap
+    is only a memory bound (16 × 5000 entries parsed every 3 s to keep 200 is garbage), but at
+    exactly 200 it computes `len(entries) > len(shown)` as `200 > 200` → `truncated: False`: the
+    panel claims completeness over a list it cut, while the *same* repository observed directly
+    says `True`. One entry more than the frame can show keeps the signal exact in both
+    directions, and 16 × 201 is the same nothing as 16 × 200. The plan this came from had it at
+    200; the correction is written into `docs/features/todo/multi-repo-git-status.md`.
+  - **The semaphore is built inside the call, never at module level.** A module-level
+    `asyncio.Semaphore` binds to the first loop that waits on it and raises on every loop after
+    — swallowed by `git_status`'s blanket `except` into a silent `None`. It passes every
+    single-loop test and fails the second time a daemon's loop exists. Measured, not feared.
+  - **One checkout whose `git` fails is one checkout with nothing to say**, not the round's
+    answer; only every one of them failing is `None`.
+- **The click knows which checkout owns the file, and derives it strictly after the chokepoint.**
+  `git_diff` used to run with `cwd` = the observed root, so in a workspace container `git` exits
+  128 and the diff route was dead for every file in every sub-repo: existing files fell through
+  to text — losing the whole point of the panel — and a **deleted** file answered `no such
+  file`, undoing the very ordering `file_view` documents. Now `owning_checkout(root, target)`
+  names the working directory. **The ordering is the security property, not a style choice:**
+  `resolve_inside` stays the single containment check and stays first, and the checkout is
+  derived from the path *it resolved*, never from the string that arrived over the socket.
+  Deriving a `cwd` from the raw string is cheap, needs no `realpath`, and is precisely how a
+  chokepoint becomes bypassable — `a/../../secret.txt` is the shape that catches a router which
+  splits on `/`. `relpath(target, checkout)` cannot escape by construction, since `checkout` was
+  found by walking up *from* `target`. One asymmetry is deliberate and stated rather than
+  hidden: `target` is a realpath, so the sub-repo branch diffs a symlink's destination, while
+  the compat branch keeps the raw string and diffs the link as it always has — unavoidable in
+  the first, avoidable in the second, so avoided there.
 - **A control command must pass two gates: the peer's address AND a token.** The first is the
   older one — loopback-only, `RHIZOME_ALLOW_REMOTE_CONTROL=1` opens it up — and it is not
   enough on its own, because the peer's address lies in two measured ways. A WebSocket
@@ -695,7 +761,23 @@ indistinguishable from "no agent is working right now". That ambiguity cost real
 page now says so itself, in the HUD, once activity has arrived with no author. This repo has
 the block installed in its own `.claude/settings.json`.
 
-Not yet built: custom avatar *images* per agent, `.gitignore` parsing, recorded-session
+**Not yet verified, for the multi-repository panel.** Both suites are green and the whole path
+was driven end to end outside pytest — a workspace of two real checkouts plus a plain directory,
+where discovery answers both, the frame interleaves them, a click on a *deleted* sub-repo row
+opens its removal diff, a click in the plain directory falls through to text, `a/../../../../etc/passwd`
+is still refused, and observing one of the checkouts directly gives byte-for-byte the old
+answer. What that does **not** settle is visual and needs a browser this host does not have:
+whether sixteen repositories' worth of rows is a panel or a wall, and whether the prefix makes
+`splitPath`'s dimmed directory unreadable at the panel's width. Nor is it measured against a
+*hostile* tree — a network mount, a directory of 10 000 children, a symlink loop —
+`MAX_SCANNED_DIRS` remains a pinned guess rather than an observed ceiling. And no real workspace
+has been polled long enough to see a round approach the 20 s worst case, which is arithmetic
+from the constants, not an observation.
+
+Not yet built: per-repository grouping in the panel (R5 in
+`docs/features/todo/multi-repo-git-status.md` — the `repo` field exists on `StatusEntry` and is
+deliberately *not* serialized, which is what keeps the frame's pinned shape untouched), custom
+avatar *images* per agent, `.gitignore` parsing, recorded-session
 replay/export. Attribution of *watcher* events is time-based, so simultaneous agents can be
 credited to one of them — hook events themselves are attributed exactly. Label textures are
 rasterised once at the pixel ratio the renderer had at construction, so dragging the window

@@ -33,6 +33,30 @@ require the result to sit under the root -- so a path that wanders through ``..`
 and comes back is fine, while banning ``..`` textually would refuse it and still
 miss the symlink.
 
+Which working tree ``git`` is run in is **derived**, not assumed: the observed
+root when it is the checkout, otherwise the checkout under it that owns the
+clicked file (:func:`_diff_location`). A workspace of repositories --
+``~/projects/{a,b,c}`` -- is a container that is not a checkout at all, so
+running ``git`` there exits 128 and the diff route dies for every file in every
+sub-repository: an existing file quietly falls through to its text, and a
+deleted one reaches the existence check and answers "no such file", undoing the
+ordering above on the single row the status panel most wants to offer.
+
+That derivation happens **strictly after** :func:`resolve_inside`, from its
+output. This is the security property, not a style choice: naming the checkout
+from the incoming string would be a second place a path is interpreted, upstream
+of the only containment check -- and ``a/../../secret.txt`` reads there as a
+plausible sub-repository ``a`` plus a remainder, which is exactly how a
+chokepoint becomes bypassable. The resolved target is paid for first and
+everything is derived from it.
+
+The cost is one asymmetry, stated rather than hidden. In the sub-repo branch the
+path handed to ``git`` is relative to a checkout only knowable from the resolved
+target, so a clicked symlink is diffed as its destination; in the single-repo
+branch the string that arrived is passed through untouched, so the link itself
+is diffed, as it always was. Unavoidable on one side, avoidable on the other,
+therefore avoided there.
+
 ``max_bytes`` exists because this frame goes down a WebSocket: a 400 MB core dump
 would be read into the daemon's memory, hex-expanded to four times its size and
 pushed to a browser. On the text and hex routes the cap applies to the bytes
@@ -56,6 +80,7 @@ import fcntl
 import os
 import stat
 
+from rhizome_graph.checkouts import owning_checkout
 from rhizome_graph.diff import git_diff
 from rhizome_graph.hexdump import looks_binary, xxd_dump
 
@@ -105,7 +130,8 @@ async def file_view(
     if os.path.isdir(target):
         return _frame(relative_path, error="that is a directory")
 
-    diff = await git_diff(root, relative_path)
+    cwd, diff_path = _diff_location(root, relative_path, target)
+    diff = await git_diff(cwd, diff_path)
     if diff is not None:
         content, truncated = cap_text(diff, max_bytes)
         return _frame(
@@ -132,6 +158,30 @@ async def file_view(
         content=data.decode("utf-8", errors="replace"),
         truncated=truncated,
     )
+
+
+def _diff_location(
+    root: str, relative_path: str, target: str
+) -> tuple[str, str]:
+    """Where `git` is run for `target`, and what it is asked about there.
+
+    Called only with the chokepoint's output, never with the string that arrived
+    over the socket -- see the module docstring for why that ordering is the
+    security property here.
+
+    The observed root when it owns the file itself (or when nothing under it
+    does), the checkout that owns it otherwise. The compat branch hands back
+    `relative_path` untouched rather than a path rebuilt from `target`: the
+    resolved target is a `realpath`, so rebuilding would diff a symlink's
+    destination instead of the link that was clicked.
+
+    `os.path.relpath` cannot climb out of `checkout` here: the checkout was found
+    by walking *up from* `target`, so `target` sits inside it by construction.
+    """
+    checkout = owning_checkout(root, target)
+    if checkout is None or checkout == os.path.realpath(root):
+        return root, relative_path
+    return checkout, os.path.relpath(target, checkout)
 
 
 def is_readable_regular(st_mode: int) -> bool:

@@ -26,16 +26,41 @@ newline in a name would split one record into two. ``core.quotepath=off``,
 because the default mangles every non-ASCII byte into ``\\303\\247`` -- a path
 that then matches no node in the graph.
 
-The repository is never an argument: `git` runs with ``cwd`` set on the observed
-root. A path argument would be resolved against the *daemon's* own working
-directory, which is some other project entirely.
+The repository is never an argument: `git` runs with ``cwd`` set on the directory
+being asked about -- the observed root, or one of the checkouts found under it. A
+path argument would be resolved against the *daemon's* own working directory,
+which is some other project entirely.
+
+**And there may be several checkouts.** A workspace root of the
+``~/projects/{a,b,c}`` shape has no `.git` at or above it, so the upward walk
+comes back empty and the panel is simply not on screen -- which reads exactly
+like a clean tree, the one thing it must never be confused with. So when nothing
+is found above the observed root, this looks below it and answers for every
+checkout there, each row carrying the prefix that puts it back where the graph
+draws it.
+
+Two decisions hold that fan-out together. The upward answer still wins outright:
+a root that is a checkout, or sits inside one, never asks what is below it, so a
+repository with vendored checkouts in it keeps the panel it has always had. And
+the downward walk *gates* the forks rather than following them -- discovery is
+50-100x cheaper than the `git` calls it decides on, which is the same trade the
+early return has always made: on a timer for the life of the daemon, forking
+`git` to be told "not a repository" is pure waste, and forking it sixteen times
+would be sixteen times the waste.
+
+The rows of several checkouts are interleaved rather than concatenated, because
+the frame keeps only the first two hundred: laid out repository by repository,
+one repository with three hundred untracked files would fill the whole cut and
+hide every other one -- this module's own failure mode, moved one level up.
 """
 
 from __future__ import annotations
 
+import asyncio
 import os
 from dataclasses import dataclass
 
+from rhizome_graph.checkouts import find_checkouts
 from rhizome_graph.gitcmd import run_git
 from rhizome_graph.repo import find_checkout_root
 
@@ -53,6 +78,28 @@ DEFAULT_TIMEOUT_SECONDS = 5.0
 #: page would have to lay out every one of them, and the viewer learns nothing
 #: from entry nine hundred that entry two hundred did not already say.
 DEFAULT_MAX_ENTRIES = 200
+
+#: How many entries one checkout may contribute to a round. Purely a memory
+#: bound: sixteen repositories times five thousand entries, parsed every three
+#: seconds to keep two hundred, is garbage the loop does not need. It is a whole
+#: `DEFAULT_MAX_ENTRIES` per checkout rather than a share of it because a share
+#: would be ``200 // N`` -- a constant that depends on N and that nobody can
+#: choose.
+#:
+#: The ``+ 1`` is the whole point of the number. `status_frame` derives
+#: truncation as ``len(entries) > len(shown)``, so a lone sub-repository with 300
+#: pending changes cut to exactly 200 on the way in yields ``200 > 200`` --
+#: ``False``, and the panel would claim completeness over a list it cut, while
+#: the same repository observed directly reports it cut. One entry more than a
+#: frame can show is exactly enough to keep that signal true, and it costs
+#: nothing: 16 x 201 is the same nothing as 16 x 200.
+MAX_ENTRIES_PER_CHECKOUT = DEFAULT_MAX_ENTRIES + 1
+
+#: How many checkouts are asked at once. A fork's timeout is 5 s, so what has to
+#: be bounded is the worst case and not the measured one: sixteen checkouts
+#: unbounded is a poll round nobody can wait out, four waves of four is the 20 s
+#: ceiling `_status_busy` is sized against.
+MAX_CONCURRENT_STATUS = 4
 
 #: Rename and copy records are followed by one extra field holding the *original*
 #: path. It carries no XY prefix, so a parser that does not consume it reads it as
@@ -75,6 +122,13 @@ class StatusEntry:
 
     path: str
     state: str
+    #: Which checkout produced it, as a prefix relative to the observed root, or
+    #: ``""`` when the observed root is itself the checkout. Defaulted, so every
+    #: existing construction stands: the single-repo path has one repository and
+    #: nothing to say about it. It cannot be recovered from the path afterwards
+    #: -- ``a/b/c.ts`` may belong to checkout ``a`` or to checkout ``a/b``, and
+    #: only the daemon knows which, at the moment it prefixes the entry.
+    repo: str = ""
 
 
 def status_command() -> list[str]:
@@ -198,6 +252,64 @@ def _normalized(root: str) -> str:
     return os.path.normpath(root)
 
 
+def prefix_entries(entries: list[StatusEntry], prefix: str) -> list[StatusEntry]:
+    """`entries` re-expressed relative to a root `prefix` segments above them.
+
+    The inverse of :func:`relativize`, and deliberately not folded into it. `git`
+    reports `src/x` because that is where the file sits in *its own* checkout;
+    the graph, `resolve_inside` and every node on screen speak in paths relative
+    to the observed root, where the same file is `a/src/x`. One function strips a
+    prefix and drops what falls outside, the other prepends one and drops
+    nothing: a filter and a map, and one function with two moods is a function
+    whose tests you have to re-read to know which mood each one pins.
+
+    The empty prefix is the identity -- discovery answers ``[""]`` for a root
+    that is itself a checkout, and joining that naively would produce `/src/x`,
+    an absolute path matching no node at all.
+
+    New entries, never a mutation: the caller keeps its originals, the same rule
+    :func:`relativize` follows.
+    """
+    if not prefix:
+        return [
+            StatusEntry(path=entry.path, state=entry.state, repo=prefix)
+            for entry in entries
+        ]
+    return [
+        StatusEntry(path=f"{prefix}/{entry.path}", state=entry.state, repo=prefix)
+        for entry in entries
+    ]
+
+
+def interleave(groups: list[list[StatusEntry]]) -> list[StatusEntry]:
+    """One list drawn round-robin from `groups`, in their own order.
+
+    :func:`status_frame` keeps only the first `DEFAULT_MAX_ENTRIES`. Over a list
+    laid out repository by repository, one repository with three hundred
+    untracked files fills the entire cut and hides every other one -- this
+    feature's own failure mode, moved one level up. A per-repository quota would
+    have to be ``200 // N``, a constant that depends on N; round-robin makes the
+    *existing* cut fair with no new constant and no signature change.
+
+    A group that runs out simply stops contributing -- no padding, no hole, no
+    repetition -- so an empty group costs nothing and skews nothing. With one
+    group this is the identity, which is the single-repo invariant: `git` orders
+    its own output and one repository must not be reordered on its way through a
+    function that exists for the case where there are several.
+    """
+    merged: list[StatusEntry] = []
+    index = 0
+    remaining = True
+    while remaining:
+        remaining = False
+        for group in groups:
+            if index < len(group):
+                merged.append(group[index])
+                remaining = True
+        index += 1
+    return merged
+
+
 def status_frame(
     entries: list[StatusEntry] | None, max_entries: int = DEFAULT_MAX_ENTRIES
 ) -> dict:
@@ -231,23 +343,80 @@ async def git_status(
 ) -> list[StatusEntry] | None:
     """The pending changes under `root`, or ``None`` when there is nothing to report.
 
-    ``None`` means "no repository, no `git`, or the call failed"; ``[]`` means
-    "a repository, and it is clean". The panel renders those differently.
+    ``None`` means "no repository anywhere, no `git`, or every call failed";
+    ``[]`` means "at least one checkout, and nothing is pending in any of them".
+    The panel renders those differently.
 
-    Outside a repository this does not fork at all. The question is answered from
-    disk by :func:`rhizome_graph.repo.find_checkout_root`, and this runs on a
-    timer for the life of the daemon -- forking `git` every three seconds to be
-    told "not a git repository" is pure waste.
+    The upward walk is asked first and its answer wins outright: when `root` is a
+    checkout, or sits inside one, this is byte-for-byte what it has always been
+    and nothing below `root` is even looked at. That is what makes backwards
+    compatibility a shape rather than a list of regression tests, and it is why a
+    repository holding vendored checkouts keeps its single panel.
+
+    Only when that comes back empty does this look downward, for the workspace
+    root that holds several checkouts side by side. Discovery *gates* the forks:
+    it is 50-100x cheaper than the `git` calls it decides on, and a directory
+    with no checkout under it still forks nothing at all -- this runs on a timer
+    for the life of the daemon, and forking `git` every three seconds to be told
+    "not a git repository" is pure waste.
+
+    One checkout whose `git` fails is one checkout with nothing to say, not the
+    round's answer; only every one of them failing is ``None``.
 
     Never raises and never hangs; see :mod:`rhizome_graph.gitcmd`.
     """
     try:
         checkout_root = find_checkout_root(root)
         if checkout_root is None:
-            return None
+            return await _multi_checkout_status(root, timeout)
         stdout = await run_git(status_command(), cwd=root, timeout=timeout)
         if stdout is None:
             return None
         return relativize(parse_status(stdout), checkout_root, os.path.abspath(root))
     except Exception:
         return None
+
+
+async def _multi_checkout_status(
+    root: str, timeout: float
+) -> list[StatusEntry] | None:
+    """Every checkout under `root`, merged. See :func:`git_status`.
+
+    The walk itself goes to a worker thread: it opens up to `MAX_SCANNED_DIRS`
+    directories, one of which may be a network mount, and on the loop's own
+    thread that is every connected browser frozen for as long as the mount feels
+    like taking. `scan_tree` is handed off for exactly this reason; this runs on
+    every poll, which is worse.
+    """
+    prefixes = await asyncio.to_thread(find_checkouts, root)
+    if not prefixes:
+        return None
+
+    # Inside the call, never at module level: a Semaphore built at import time
+    # binds to the first loop that has to wait on it and raises on every loop
+    # after that -- swallowed by the blanket ``except`` above into a silent
+    # ``None``, so it would pass every single-loop test and fail the second time
+    # a daemon's loop exists.
+    limit = asyncio.Semaphore(MAX_CONCURRENT_STATUS)
+
+    async def group_for(prefix: str) -> list[StatusEntry] | None:
+        async with limit:
+            stdout = await run_git(
+                status_command(), cwd=os.path.join(root, prefix), timeout=timeout
+            )
+        if stdout is None:
+            return None
+        entries = parse_status(stdout)[:MAX_ENTRIES_PER_CHECKOUT]
+        return prefix_entries(entries, prefix)
+
+    results = await asyncio.gather(
+        *(group_for(prefix) for prefix in prefixes), return_exceptions=True
+    )
+    groups = [
+        result
+        for result in results
+        if isinstance(result, list)  # a failure is ``None``, a crash an exception
+    ]
+    if not groups:
+        return None
+    return interleave(groups)

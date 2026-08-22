@@ -52,6 +52,10 @@ import urllib.request
 from dataclasses import dataclass, field
 from pathlib import Path
 
+import pytest
+
+from rhizome_graph.assets import default_web_dist
+
 REPO_ROOT = Path(__file__).resolve().parent.parent
 
 #: The console script's target, `module:function`. `tests/test_cli_entry_point.py`
@@ -123,6 +127,52 @@ def port_is_busy(port: int) -> bool:
     with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as probe:
         probe.settimeout(0.5)
         return probe.connect_ex(("127.0.0.1", port)) == 0
+
+
+#: Why a `GET /` assertion stands down instead of going red when nobody has
+#: built the front end. `web/dist` is gitignored -- it is build output -- so a
+#: fresh clone has none, and building it wants Node 18+, which a machine running
+#: only the Python suite need not have. The daemon's answer in that state is
+#: correct and deliberate: it logs "web/dist not found; serving WebSocket only"
+#: and answers 503, which is exactly how `--dev` runs with Vite hosting the
+#: page. A red test there would be a claim that this code is broken, and it is
+#: indistinguishable from a real regression -- which cost real time once, with a
+#: set of innocent commits suspected of causing it. An incomplete environment is
+#: a skip; broken code is a failure; the two must not look alike.
+NO_FRONT_END_REASON = (
+    "the front end is not built here, so the daemon under test serves the "
+    "WebSocket alone and answers 503 for the page -- which is correct, and is "
+    "how --dev runs. Build it and this test runs again: `cd web && npm ci && "
+    "npm run build`, or `./start.sh`. Exporting RHIZOME_WEB_DIST will not do "
+    "it: clean_environment() scrubs RHIZOME_* out of the child, so the daemon "
+    "would not see the override either."
+)
+
+
+def front_end_is_built() -> bool:
+    """Would a daemon started by :func:`start` find a page to serve?
+
+    Asked of `assets.default_web_dist`, never of `<checkout>/web/dist` directly,
+    because that path is only the last of four candidates: an installed wheel's
+    `rhizome_graph/web` and a distribution's `/usr/lib/rhizome-graph/web` serve
+    the page just as well, and a test that looked only at the checkout would
+    stand down on a machine where the page is in fact servable. The resolver
+    also insists on an `index.html`, so a hollow directory answers `None` --
+    which is precisely the state to stand down on, since the daemon skips it
+    too.
+
+    The environment handed in is :func:`clean_environment`, the one the
+    subprocess actually gets, so this asks the question the daemon under test
+    will ask. That scrub drops `RHIZOME_WEB_DIST`, so an override exported
+    around the suite does not reach the child and must not count here either.
+    """
+    return default_web_dist(clean_environment()) is not None
+
+
+def require_front_end() -> None:
+    """Stand this test down unless there is a built page for the daemon to serve."""
+    if not front_end_is_built():
+        pytest.skip(NO_FRONT_END_REASON)
 
 
 def get(url: str, timeout: float = 5.0) -> tuple[int, str]:

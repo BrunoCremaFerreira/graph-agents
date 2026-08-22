@@ -84,7 +84,17 @@ from daemon_probe import (
     scrub,
     settings_for,
 )
-from rhi_process import REPO_ROOT, URL, clean_environment, entry_argv, get, start
+from rhi_process import (
+    NO_FRONT_END_REASON,
+    REPO_ROOT,
+    URL,
+    clean_environment,
+    entry_argv,
+    front_end_is_built,
+    get,
+    require_front_end,
+    start,
+)
 
 #: How long `rhi` is given to import websockets and watchdog, seed a nearly
 #: empty directory, bind and print. Generous; the imports dominate.
@@ -429,7 +439,17 @@ def window_open(tmp_path_factory: pytest.TempPathFactory) -> Run:
 
 
 def test_the_page_stays_reachable_in_an_ordinary_browser(window_open: Run) -> None:
-    """User requirement 4: the window is one viewer, not the only one."""
+    """User requirement 4: the window is one viewer, not the only one.
+
+    Stands down where nobody has built the front end: with no `web/dist` the
+    daemon answers 503 for the page by design -- that is the `--dev` path, with
+    Vite hosting it -- so a red here would blame this code for an unbuilt
+    checkout. `NO_FRONT_END_REASON` in `tests/rhi_process.py` says what to run.
+    The fixture is untouched, so the two assertions beside this one -- that Ctrl-C
+    still quits with a window open, and prints no traceback -- keep running.
+    """
+    require_front_end()
+
     assert window_open.fetched == 200, (
         f"{window_open.url} answered {window_open.fetched} while a window was "
         f"open\n--- stderr ---\n{window_open.stderr}"
@@ -479,7 +499,16 @@ def window_failed(tmp_path_factory: pytest.TempPathFactory) -> Run:
 
 
 def test_a_window_that_cannot_open_still_serves_the_page(window_failed: Run) -> None:
-    """Requirement 4 does not depend on the window, so it must not die with it."""
+    """Requirement 4 does not depend on the window, so it must not die with it.
+
+    Unless there is no page to serve at all, which is not the window's doing and
+    not a defect: see `NO_FRONT_END_REASON` in `tests/rhi_process.py`. The rest
+    of the degradation -- the URL, the reason on stderr, no traceback, exit 0 --
+    is asserted by the four tests below from the same run, and none of them
+    stands down.
+    """
+    require_front_end()
+
     assert window_failed.fetched == 200, (
         f"{window_failed.url} answered {window_failed.fetched}\n"
         f"--- stderr ---\n{window_failed.stderr}"
@@ -582,7 +611,15 @@ def test_no_backend_at_all_without_the_flag_is_not_a_refusal(
 
     Nothing was requested, so nothing was denied -- the daemon runs until it is
     asked to stop, exactly as `--no-window` would have.
+
+    Only the served page needs a built front end. That it kept running rather
+    than refusing -- which is what this test is named for -- is asserted with or
+    without one, so the skip is declared at the very end and takes nothing with
+    it. Without `web/dist` the 503 is deliberate (`--dev` has Vite host the
+    page), so it is an incomplete environment, not a regression; see
+    `NO_FRONT_END_REASON` in `tests/rhi_process.py`.
     """
+    served = front_end_is_built()
     ingest = tmp_path_factory.mktemp("run") / "ingest.sock"
     running = start((str(tmp_path), "--socket", str(ingest)), prelude=NOTHING_AVAILABLE)
     try:
@@ -590,9 +627,13 @@ def test_no_backend_at_all_without_the_flag_is_not_a_refusal(
             URL, STARTUP_TIMEOUT_SECONDS_PROCESS
         ).group(0).rstrip(".,")
         status = _fetch(url)
-        assert status == 200, f"{url} answered {status}"
+        if served:
+            assert status == 200, f"{url} answered {status}"
         assert running.is_alive(), "rhi gave up because it could open no window"
     finally:
         returncode = running.stop()
 
     assert returncode == 0, running.err
+
+    if not served:
+        pytest.skip(NO_FRONT_END_REASON)

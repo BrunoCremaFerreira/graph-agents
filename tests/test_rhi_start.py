@@ -54,7 +54,7 @@ from urllib.parse import urlparse
 
 import pytest
 
-from rhi_process import URL, free_port, get, start
+from rhi_process import URL, free_port, get, require_front_end, start
 from rhizome_graph.cli import build_parser
 
 #: How long the daemon is given to caption, seed a nearly empty directory, poll
@@ -161,7 +161,17 @@ def test_starting_prints_a_url(started: Started) -> None:
 
 
 def test_the_printed_url_answers(started: Started) -> None:
-    """Printed and served must be the same address -- see the module docstring."""
+    """Printed and served must be the same address -- see the module docstring.
+
+    Stands down, rather than failing, when nothing here has built `web/dist`:
+    the daemon then answers 503 by design and the page it would have served does
+    not exist, which is an incomplete environment and not a broken program. The
+    fixture is deliberately left alone, so every other assertion about that one
+    run -- the URL, the port, the foreground, the socket, the exit status -- keeps
+    being made. See `NO_FRONT_END_REASON` in `tests/rhi_process.py`.
+    """
+    require_front_end()
+
     assert started.status == 200, (
         f"{started.url} answered {started.status}\n"
         f"--- stdout ---\n{started.stdout}--- stderr ---\n{started.stderr}"
@@ -174,7 +184,14 @@ def test_the_printed_url_carries_the_port_that_was_asked_for(started: Started) -
 
 
 def test_the_served_page_is_the_built_front_end(started: Started) -> None:
-    """`web/dist` was found by the real search, over the real installation."""
+    """`web/dist` was found by the real search, over the real installation.
+
+    Which is only a question worth asking where there is a build to find: with
+    none, this asks the same resolver the daemon asks and stands down, because
+    "nobody ran `npm run build`" must not read as "the asset search regressed".
+    """
+    require_front_end()
+
     assert TOKEN_MARKER in started.body, (
         "the page served carries no token assignment, so either web/dist was "
         "not found, index.html was not served, or the token was not injected"

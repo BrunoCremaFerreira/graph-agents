@@ -62,11 +62,13 @@ from urllib.parse import urlparse
 import pytest
 
 from rhi_process import (
+    NO_FRONT_END_REASON,
     REPO_ROOT,
     URL,
     clean_environment,
     entry_argv,
     free_port,
+    front_end_is_built,
     get,
     start,
 )
@@ -217,7 +219,18 @@ def test_a_busy_default_port_is_moved_off_and_the_new_one_is_printed(
     tmp_path: Path,
 ) -> None:
     """The whole stage in one run: the default is taken, so `rhi` lands beside
-    it -- and the URL on stdout is the one that answers, not the one it wanted."""
+    it -- and the URL on stdout is the one that answers, not the one it wanted.
+
+    Only the *answers* half needs a built front end, and only that half stands
+    down without one: the walk off the busy default, and the URL naming where it
+    landed, are asserted either way, so a regression in the port stage is still
+    red on a checkout nobody has run `npm run build` in. Without the build the
+    daemon serves the WebSocket alone and answers 503 on purpose (that is the
+    `--dev` path), which is an incomplete environment rather than a defect --
+    see `NO_FRONT_END_REASON` in `tests/rhi_process.py`. The skip is declared
+    last, once everything that does not need a page has been checked.
+    """
+    served = front_end_is_built()
     taken = free_port()
     listener = _holding(taken)
     running = start(
@@ -227,12 +240,16 @@ def test_a_busy_default_port_is_moved_off_and_the_new_one_is_printed(
     try:
         url = running.wait_for_line(URL, STARTUP_TIMEOUT_SECONDS).group(0).rstrip(".,")
         assert urlparse(url).port != taken, f"{url} names the port already held"
-        status, body = _fetch(url)
+        if served:
+            status, body = _fetch(url)
 
-        assert status == 200, f"{url} was printed but answered {status}"
+            assert status == 200, f"{url} was printed but answered {status}"
     finally:
         running.stop()
         listener.close()
+
+    if not served:
+        pytest.skip(NO_FRONT_END_REASON)
 
 
 def test_an_explicit_busy_port_refuses_to_start(tmp_path: Path) -> None:
